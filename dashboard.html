@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PAIR SCANNER v5</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#050b12; --bg2:#080f1a; --bg3:#0c1825; --panel:#0a1520;
+  --cyan:#00d4ff; --cyan2:#0099cc; --green:#00e87a; --red:#ff3355;
+  --amber:#ffaa00; --purple:#a855f7; --dim:#1e3a55; --dim2:#2a4a68;
+  --text:#6ba3c0; --text2:#8cc4e0; --border:#0d2235; --border2:#122a40;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;min-height:100vh;padding-bottom:34px}
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9998;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,10,20,.05) 2px,rgba(0,10,20,.05) 3px)}
+
+/* HEADER */
+header{background:var(--bg2);border-bottom:1px solid var(--border2);padding:0 20px;height:46px;
+  display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:100}
+.logo{font-family:'Rajdhani',sans-serif;font-size:17px;font-weight:700;color:var(--cyan);
+  letter-spacing:4px;text-shadow:0 0 16px rgba(0,212,255,.35)}
+.mode-badge{font-size:9px;padding:2px 8px;border:1px solid;letter-spacing:2px;
+  font-family:'Rajdhani',sans-serif;font-weight:600}
+.mode-paper{color:var(--amber);border-color:var(--amber)}
+.mode-live{color:var(--red);border-color:var(--red);animation:blink 1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
+.h-sep{width:1px;height:20px;background:var(--border);margin:0 2px}
+.h-balance{font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:600;color:var(--text2)}
+.h-return{font-size:11px}
+.h-vix{font-size:10px;color:var(--dim2);margin-left:auto}
+.conn-dot{width:7px;height:7px;border-radius:50%;background:var(--dim);margin-left:8px}
+.conn-dot.on{background:var(--green);box-shadow:0 0 6px var(--green)}
+
+/* SCAN STATUS */
+#scan-status{background:var(--bg3);border-bottom:1px solid var(--border2);
+  padding:8px 20px;display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
+.scan-left{display:flex;flex-direction:column;gap:5px}
+.scan-phase-row{display:flex;align-items:center;gap:12px}
+.scan-phase{font-size:11px;color:var(--text2);letter-spacing:.5px}
+.scan-phase.running{color:var(--amber)}
+.scan-phase.complete{color:var(--green)}
+.scan-track{height:2px;background:var(--dim);border-radius:1px;overflow:hidden;position:relative}
+.scan-fill{height:100%;border-radius:1px;background:linear-gradient(90deg,var(--cyan2),var(--cyan));
+  transition:width .5s}
+.scan-fill.pulse{animation:scanpulse 1.2s ease-in-out infinite}
+@keyframes scanpulse{0%,100%{opacity:.6}50%{opacity:1}}
+.scan-counters{display:flex;gap:16px;font-size:10px;color:var(--dim2)}
+.sc b{color:var(--text2)}
+.scan-right{text-align:right;font-size:10px;color:var(--dim2);line-height:1.8}
+.force-link{color:var(--dim2);cursor:pointer;font-size:9px;letter-spacing:1px;
+  text-decoration:none;border-bottom:1px dotted var(--dim);transition:color .15s}
+.force-link:hover{color:var(--cyan)}
+
+/* STATS BAR */
+#statsbar{display:flex;gap:1px;background:var(--border);border-bottom:1px solid var(--border)}
+.stat{flex:1;background:var(--bg2);padding:9px 14px;text-align:center}
+.sv{font-family:'Rajdhani',sans-serif;font-size:20px;font-weight:700;color:var(--cyan);line-height:1}
+.sl{font-size:9px;color:var(--dim2);letter-spacing:1px;margin-top:2px}
+
+/* DECISIONS FEED */
+#decisions{background:var(--bg2);border-bottom:1px solid var(--border2);padding:10px 20px}
+.dec-header{font-size:9px;color:var(--dim2);letter-spacing:2px;margin-bottom:8px;
+  display:flex;justify-content:space-between}
+.dec-list{display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto}
+.dec-row{display:grid;grid-template-columns:80px 160px 80px 60px 60px 1fr;
+  gap:8px;align-items:center;padding:4px 6px;border-left:2px solid var(--dim);font-size:10px}
+.dec-row.OPENED{border-left-color:var(--green)}
+.dec-row.BLOCKED{border-left-color:var(--red)}
+.dec-row.WATCHING{border-left-color:var(--dim2)}
+.dec-action{font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;letter-spacing:1px}
+.OPENED  .dec-action{color:var(--green)}
+.BLOCKED .dec-action{color:var(--red)}
+.WATCHING .dec-action{color:var(--dim2)}
+.dec-pair{color:var(--text2)}
+.dec-sector{color:var(--dim2);font-size:9px}
+.dec-z{font-size:10px}
+.dec-score{color:var(--dim2);font-size:9px}
+.dec-reason{color:var(--dim2);font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dec-empty{color:var(--dim2);font-size:10px;padding:4px 0;font-style:italic}
+#decisions.collapsed .dec-list{display:none}
+
+/* TABS */
+.tabs{display:flex;border-bottom:1px solid var(--border);background:var(--bg2)}
+.tab{padding:9px 18px;cursor:pointer;font-size:9px;letter-spacing:2px;color:var(--dim2);
+  border-right:1px solid var(--border);font-family:'Rajdhani',sans-serif;font-weight:600;transition:color .15s}
+.tab.active{color:var(--cyan);border-bottom:2px solid var(--cyan);margin-bottom:-1px}
+.tab:hover{color:var(--text)}
+.tab-badge{display:inline-block;background:var(--dim);color:var(--text);border-radius:2px;
+  padding:1px 5px;font-size:9px;margin-left:5px;vertical-align:middle}
+.tab.active .tab-badge{background:var(--cyan);color:var(--bg)}
+
+/* PANELS */
+.panel{display:none;padding:16px 20px}
+.panel.active{display:block}
+
+/* PAIR CARDS */
+#pairs-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
+.pair-card{background:var(--bg2);border:1px solid var(--border);padding:14px;position:relative;overflow:hidden}
+.pair-card::before{content:'';position:absolute;top:0;left:0;width:3px;height:100%}
+.pair-card.LONG_A_SHORT_B::before{background:var(--green)}
+.pair-card.SHORT_A_LONG_B::before{background:var(--red)}
+.pair-card.TAKE_PROFIT{border-color:rgba(0,232,122,.25)}
+.pair-card.STOP_LOSS{border-color:rgba(255,51,85,.25)}
+.pair-card.TIMEOUT{border-color:rgba(255,170,0,.2)}
+.pc-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px}
+.pc-tickers{font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;color:var(--cyan2)}
+.pc-meta{font-size:9px;color:var(--dim2);margin-top:3px}
+.dir-pill{font-size:9px;padding:3px 8px;font-family:'Rajdhani',sans-serif;font-weight:600;
+  letter-spacing:1px;border:1px solid}
+.dir-pill.long{color:var(--green);border-color:var(--green)}
+.dir-pill.short{color:var(--red);border-color:var(--red)}
+.pc-row{display:flex;justify-content:space-between;margin-bottom:3px}
+.pc-lbl{color:var(--dim2);font-size:10px}
+.pc-val{color:var(--text);font-size:10px}
+.pnl-big{font-family:'Rajdhani',sans-serif;font-size:28px;font-weight:700;
+  margin:10px 0 4px;letter-spacing:1px}
+.pnl-big.up{color:var(--green);text-shadow:0 0 10px rgba(0,232,122,.35)}
+.pnl-big.dn{color:var(--red)}
+.pnl-big.neu{color:var(--dim2)}
+.z-track{height:3px;background:var(--dim);border-radius:2px;margin:8px 0 4px;overflow:hidden}
+.z-fill{height:100%;border-radius:2px;transition:width .4s,background .4s}
+.z-labels{display:flex;justify-content:space-between;font-size:9px;color:var(--dim2)}
+.spark{width:100%;height:32px;margin-top:8px}
+.spark-line{fill:none;stroke:var(--cyan2);stroke-width:1.2;opacity:.8}
+.empty-state{color:var(--dim2);padding:60px;text-align:center;
+  font-family:'Rajdhani',sans-serif;font-size:14px;letter-spacing:2px}
+
+/* SIGNALS TABLE */
+.sig-wrap{overflow-x:auto}
+.sig-table{width:100%;border-collapse:collapse;white-space:nowrap}
+.sig-table th{text-align:left;padding:7px 10px;font-size:9px;letter-spacing:2px;
+  color:var(--dim2);border-bottom:1px solid var(--border);
+  font-family:'Rajdhani',sans-serif;font-weight:600;background:var(--bg2)}
+.sig-table td{padding:6px 10px;font-size:10px;border-bottom:1px solid var(--border)}
+.sig-table tr:hover td{background:var(--bg3)}
+
+/* CONFIG PANEL */
+.cfg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;
+  max-width:900px}
+.cfg-card{background:var(--bg2);border:1px solid var(--border);padding:16px}
+.cfg-label{font-size:9px;color:var(--dim2);letter-spacing:2px;margin-bottom:8px;
+  font-family:'Rajdhani',sans-serif;font-weight:600}
+.cfg-desc{font-size:9px;color:var(--dim2);margin-bottom:10px;line-height:1.5}
+.cfg-val{font-family:'Rajdhani',sans-serif;font-size:22px;font-weight:700;color:var(--cyan);margin-bottom:8px}
+.cfg-input{display:flex;gap:8px;align-items:center}
+.cfg-range{flex:1;-webkit-appearance:none;height:2px;background:var(--dim2);border:none;
+  outline:none;cursor:pointer}
+.cfg-range::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;
+  border-radius:50%;background:var(--cyan);cursor:pointer}
+.cfg-num{width:48px;background:var(--bg3);border:1px solid var(--border2);
+  color:var(--text2);padding:3px 6px;font-family:'JetBrains Mono',monospace;font-size:11px;text-align:center}
+.cfg-num:focus{outline:none;border-color:var(--cyan2)}
+.cfg-save{margin-top:20px}
+.btn-save{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;letter-spacing:2px;
+  padding:8px 24px;border:1px solid var(--green);color:var(--green);background:none;cursor:pointer;
+  transition:all .2s}
+.btn-save:hover{background:rgba(0,232,122,.08)}
+.cfg-ro{color:var(--dim2);font-size:11px;margin-top:4px}
+.cfg-ro b{color:var(--text2)}
+
+/* LOG */
+.log-list{max-height:600px;overflow-y:auto}
+.log-row{display:grid;grid-template-columns:68px 160px 1fr;gap:10px;
+  padding:5px 10px;border-bottom:1px solid var(--border)}
+.log-ts{color:var(--dim2)}
+.log-evt{font-weight:500}
+.log-det{color:var(--text);word-break:break-word}
+.evt-SCAN_START,.evt-SCAN_DONE,.evt-BH_CORRECTION,.evt-FETCH_START,.evt-FETCH_DONE{color:var(--cyan)}
+.evt-PAIR_OPENED,.evt-CAPITAL_DEPOSIT{color:var(--green)}
+.evt-PAIR_CLOSED{color:var(--amber)}
+.evt-STOP_LOSS{color:var(--red)}
+.evt-TAKE_PROFIT{color:var(--green)}
+.evt-REGIME_BLOCK,.evt-GATE_BLOCK{color:var(--amber)}
+.evt-CONFIG_CHANGE{color:var(--purple)}
+.evt-RATE_LIMIT,.evt-FETCH_ERR,.evt-FX_WARN{color:var(--purple)}
+.evt-TX_COST_ENTRY,.evt-TX_COST_EXIT,.evt-CAPITAL_WITHDRAW{color:var(--dim2)}
+
+/* FOOTER */
+#bot{position:fixed;bottom:0;left:0;right:0;z-index:100;background:var(--bg2);
+  border-top:1px solid var(--border);padding:4px 20px;
+  display:flex;justify-content:space-between;font-size:9px;color:var(--dim2);letter-spacing:1px}
+#bot b{color:var(--text)}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="logo">PAIR SCANNER</div>
+  <div id="mode-badge" class="mode-badge mode-paper">PAPER</div>
+  <div class="h-sep"></div>
+  <div class="h-balance" id="h-balance">€–</div>
+  <div class="h-return" id="h-return"></div>
+  <div class="h-vix" id="h-vix"></div>
+  <div class="conn-dot" id="dot"></div>
+</header>
+
+<!-- SCAN STATUS (always visible, no button) -->
+<div id="scan-status">
+  <div class="scan-left">
+    <div class="scan-phase-row">
+      <span class="scan-phase" id="scan-phase">INITIALISING — FIRST SCAN STARTING IN 8s</span>
+    </div>
+    <div class="scan-track"><div class="scan-fill" id="scan-fill" style="width:0%"></div></div>
+    <div class="scan-counters">
+      <span class="sc">TICKERS <b id="sc-tick">–</b></span>
+      <span class="sc">PAIRS <b id="sc-pairs">–</b></span>
+      <span class="sc">BH SURVIVED <b id="sc-bh">–</b></span>
+      <span class="sc">SIGNALS <b id="sc-sigs">–</b></span>
+      <span class="sc">VIX <b id="sc-vix">–</b></span>
+    </div>
+  </div>
+  <div class="scan-right">
+    <div id="scan-next-line"></div>
+    <div id="scan-last-line" style="margin-top:2px"></div>
+    <div style="margin-top:6px"><span class="force-link" onclick="forceScan()">↻ FORCE SCAN</span></div>
+  </div>
+</div>
+
+<!-- STATS -->
+<div id="statsbar">
+  <div class="stat"><div class="sv" id="s-open">–</div><div class="sl">OPEN PAIRS</div></div>
+  <div class="stat"><div class="sv" id="s-tp" style="color:var(--green)">–</div><div class="sl">TAKE PROFIT</div></div>
+  <div class="stat"><div class="sv" id="s-sl" style="color:var(--red)">–</div><div class="sl">STOP LOSS</div></div>
+  <div class="stat"><div class="sv" id="s-avgpnl">–</div><div class="sl">AVG P&L</div></div>
+  <div class="stat"><div class="sv" id="s-totalret">–</div><div class="sl">TOTAL RETURN</div></div>
+  <div class="stat"><div class="sv" id="s-sigs24" style="color:var(--cyan)">–</div><div class="sl">SIGNALS 24H</div></div>
+</div>
+
+<!-- DECISION FEED -->
+<div id="decisions">
+  <div class="dec-header">
+    <span>LAST SCAN DECISIONS</span>
+    <span id="dec-meta" style="color:var(--dim2)">awaiting first scan</span>
+  </div>
+  <div class="dec-list" id="dec-list">
+    <div class="dec-empty">No decisions yet — first scan running automatically on startup.</div>
+  </div>
+</div>
+
+<!-- TABS -->
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('pairs')">PAIRS<span class="tab-badge" id="tb-pairs">0</span></div>
+  <div class="tab" onclick="switchTab('signals')">SIGNALS<span class="tab-badge" id="tb-signals">0</span></div>
+  <div class="tab" onclick="switchTab('config')">CONFIG</div>
+  <div class="tab" onclick="switchTab('log')">LOG</div>
+</div>
+
+<!-- PAIRS -->
+<div id="panel-pairs" class="panel active">
+  <div id="pairs-grid"><div class="empty-state">AWAITING FIRST SCAN</div></div>
+</div>
+
+<!-- SIGNALS -->
+<div id="panel-signals" class="panel">
+  <div class="sig-wrap">
+    <table class="sig-table">
+      <thead><tr>
+        <th>TIME</th><th>PAIR</th><th>SECTOR</th><th>DIR</th>
+        <th>Z-SCORE</th><th>HALF-LIFE</th><th>COINT-P</th><th>OOS-P</th>
+        <th>HL-CV</th><th>SCORE</th><th>CONF</th>
+      </tr></thead>
+      <tbody id="sig-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- CONFIG -->
+<div id="panel-config" class="panel">
+  <div class="cfg-grid">
+    <div class="cfg-card">
+      <div class="cfg-label">AUTO-TRADE SCORE THRESHOLD</div>
+      <div class="cfg-desc">Signals with score ≥ this value open a position automatically. Score 50 = z at entry threshold. Score 100 = 2× entry z.</div>
+      <div class="cfg-val" id="cfg-score-val">80</div>
+      <div class="cfg-input">
+        <input type="range" class="cfg-range" id="cfg-score" min="50" max="100" value="80" oninput="document.getElementById('cfg-score-val').textContent=this.value;document.getElementById('cfg-score-num').value=this.value">
+        <input type="number" class="cfg-num" id="cfg-score-num" value="80" min="50" max="100" oninput="document.getElementById('cfg-score').value=this.value;document.getElementById('cfg-score-val').textContent=this.value">
+      </div>
+    </div>
+    <div class="cfg-card">
+      <div class="cfg-label">VIX REGIME FILTER</div>
+      <div class="cfg-desc">No new positions open when VIX exceeds this level. Pairs trading fails in high-vol regimes. Raise to trade through volatility, lower for tighter filter.</div>
+      <div class="cfg-val" id="cfg-vix-val">25</div>
+      <div class="cfg-input">
+        <input type="range" class="cfg-range" id="cfg-vix" min="15" max="60" value="25" oninput="document.getElementById('cfg-vix-val').textContent=this.value;document.getElementById('cfg-vix-num').value=this.value">
+        <input type="number" class="cfg-num" id="cfg-vix-num" value="25" min="15" max="60" oninput="document.getElementById('cfg-vix').value=this.value;document.getElementById('cfg-vix-val').textContent=this.value">
+      </div>
+    </div>
+    <div class="cfg-card">
+      <div class="cfg-label">MAX OPEN POSITIONS</div>
+      <div class="cfg-desc">Total position cap across all sectors. Each position uses risk-per-trade % of available capital.</div>
+      <div class="cfg-val" id="cfg-maxpos-val">6</div>
+      <div class="cfg-input">
+        <input type="range" class="cfg-range" id="cfg-maxpos" min="1" max="20" value="6" oninput="document.getElementById('cfg-maxpos-val').textContent=this.value;document.getElementById('cfg-maxpos-num').value=this.value">
+        <input type="number" class="cfg-num" id="cfg-maxpos-num" value="6" min="1" max="20" oninput="document.getElementById('cfg-maxpos').value=this.value;document.getElementById('cfg-maxpos-val').textContent=this.value">
+      </div>
+    </div>
+    <div class="cfg-card">
+      <div class="cfg-label">MAX POSITIONS PER SECTOR</div>
+      <div class="cfg-desc">Concentration limit per sector. Prevents the scanner from filling all slots with defense names when the sector is dislocated.</div>
+      <div class="cfg-val" id="cfg-maxsec-val">2</div>
+      <div class="cfg-input">
+        <input type="range" class="cfg-range" id="cfg-maxsec" min="1" max="10" value="2" oninput="document.getElementById('cfg-maxsec-val').textContent=this.value;document.getElementById('cfg-maxsec-num').value=this.value">
+        <input type="number" class="cfg-num" id="cfg-maxsec-num" value="2" min="1" max="10" oninput="document.getElementById('cfg-maxsec').value=this.value;document.getElementById('cfg-maxsec-val').textContent=this.value">
+      </div>
+    </div>
+  </div>
+  <div class="cfg-save">
+    <button class="btn-save" onclick="saveConfig()">APPLY CHANGES</button>
+    <div style="margin-top:10px;font-size:9px;color:var(--dim2)">Changes take effect on the next scan cycle. Restart the server to make them permanent.</div>
+  </div>
+  <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">
+    <div style="font-size:9px;color:var(--dim2);letter-spacing:2px;margin-bottom:10px;font-family:Rajdhani,sans-serif;font-weight:600">READ-ONLY — SET VIA ENV AT STARTUP</div>
+    <div class="cfg-ro" id="cfg-ro-vals">loading…</div>
+  </div>
+</div>
+
+<!-- LOG -->
+<div id="panel-log" class="panel">
+  <div class="log-list" id="event-list"></div>
+</div>
+
+<div id="bot">
+  <span>UPDATED <b id="bt-ts">–</b></span>
+  <span>NEXT P&L POLL <b id="bt-next">–</b></span>
+  <span>MODE <b id="bt-mode">–</b></span>
+</div>
+
+<script>
+// ── STATE ────────────────────────────────────────────────
+let state    = null;
+let scanSt   = null;
+let nextPoll = Date.now() + 900000;
+let scanning = false;
+
+// ── SSE ──────────────────────────────────────────────────
+const es = new EventSource('/events');
+es.onopen  = () => document.getElementById('dot').classList.add('on');
+es.onerror = () => document.getElementById('dot').classList.remove('on');
+es.onmessage = e => {
+  const d = JSON.parse(e.data);
+  if (d.scanState && !d.positions) {
+    scanSt = d.scanState;
+    renderScanStatus(scanSt);
+    return;
+  }
+  state  = d;
+  scanSt = d.scanState || scanSt;
+  nextPoll = Date.now() + (d.config.pollMinutes || 15) * 60000;
+  render(d);
+  if (scanSt) renderScanStatus(scanSt);
+};
+
+// ── COUNTDOWN ────────────────────────────────────────────
+setInterval(() => {
+  const s = Math.max(0, Math.round((nextPoll - Date.now()) / 1000));
+  document.getElementById('bt-next').textContent =
+    String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+
+  if (scanSt && scanSt.nextScanAt && !scanning) {
+    const nxt = Math.max(0, Math.round((new Date(scanSt.nextScanAt) - Date.now()) / 1000));
+    document.getElementById('scan-next-line').textContent = 'NEXT AUTO ' +
+      String(Math.floor(nxt/60)).padStart(2,'0') + ':' + String(nxt%60).padStart(2,'0');
+  }
+}, 1000);
+
+// ── TABS ─────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) =>
+    t.classList.toggle('active', ['pairs','signals','config','log'][i] === name));
+  document.querySelectorAll('.panel').forEach(p =>
+    p.classList.toggle('active', p.id === 'panel-' + name));
+  if (name === 'config') loadConfig();
+}
+
+// ── FORCE SCAN ───────────────────────────────────────────
+function forceScan() {
+  if (scanning) return;
+  fetch('/scan', { method: 'POST' });
+}
+
+// ── SCAN STATUS ──────────────────────────────────────────
+function renderScanStatus(ss) {
+  const phase = document.getElementById('scan-phase');
+  const fill  = document.getElementById('scan-fill');
+  const total = ss.tickersTotal || 0;
+  const done  = ss.tickersDone  || 0;
+
+  scanning = ss.running;
+
+  if (ss.running) {
+    document.getElementById('scan-next-line').textContent = '';
+    if (ss.phase === 'fetching') {
+      const pct = total > 0 ? (done / total * 100) : 5;
+      fill.style.width = pct.toFixed(1) + '%';
+      fill.className = 'scan-fill pulse';
+      phase.className = 'scan-phase running';
+      phase.textContent = `FETCHING PRICES — ${done} / ${total} TICKERS`;
+    } else if (ss.phase === 'analyzing') {
+      fill.style.width = '80%';
+      fill.className = 'scan-fill pulse';
+      phase.className = 'scan-phase running';
+      phase.textContent = `ANALYZING ${ss.pairsTotal||0} PAIRS — BH SURVIVED ${ss.bhSurvived||0}`;
+    }
+  } else if (ss.phase === 'complete') {
+    fill.style.width = '100%';
+    fill.className = 'scan-fill';
+    phase.className = 'scan-phase complete';
+    const high = (state && state.signals) ? state.signals.filter(s => s.confidence==='HIGH').length : 0;
+    phase.textContent = `COMPLETE — ${ss.signalsFound} SIGNALS FOUND (${high} HIGH CONFIDENCE)`;
+    if (ss.completedAt)
+      document.getElementById('scan-last-line').textContent = 'LAST AT ' + ss.completedAt.slice(11,19);
+  } else {
+    fill.style.width = '0%';
+    fill.className = 'scan-fill';
+    phase.className = 'scan-phase';
+    phase.textContent = ss.completedAt
+      ? `IDLE — NEXT SCAN SCHEDULED`
+      : `INITIALISING — AUTO-STARTING SHORTLY`;
+  }
+
+  document.getElementById('sc-tick').textContent  = total > 0 ? `${done}/${total}` : '–';
+  document.getElementById('sc-pairs').textContent = ss.pairsTotal   || '–';
+  document.getElementById('sc-bh').textContent    = ss.bhSurvived != null && ss.phase !== 'fetching' ? ss.bhSurvived : '–';
+  document.getElementById('sc-sigs').textContent  = ss.signalsFound != null && ss.phase !== 'idle'   ? ss.signalsFound : '–';
+
+  if (ss.lastVix != null) {
+    const vixEl = document.getElementById('sc-vix');
+    vixEl.textContent = ss.lastVix.toFixed(1);
+    vixEl.style.color = ss.lastVix > 25 ? 'var(--red)' : ss.lastVix > 20 ? 'var(--amber)' : 'var(--green)';
+    document.getElementById('h-vix').textContent = `VIX ${ss.lastVix.toFixed(1)}`;
+  }
+
+  if (ss.lastDecisions && ss.lastDecisions.length) renderDecisions(ss);
+}
+
+// ── DECISION FEED ─────────────────────────────────────────
+function renderDecisions(ss) {
+  const list = document.getElementById('dec-list');
+  const meta = document.getElementById('dec-meta');
+
+  const opened  = ss.lastDecisions.filter(d => d.action === 'OPENED').length;
+  const blocked = ss.lastDecisions.filter(d => d.action === 'BLOCKED').length;
+  const watching= ss.lastDecisions.filter(d => d.action === 'WATCHING').length;
+
+  meta.textContent = (ss.completedAt ? ss.completedAt.slice(11,19) + ' · ' : '') +
+    `${ss.signalsFound} signals · ${opened} opened · ${blocked} blocked · ${watching} watching`;
+  if (ss.lastVix != null)
+    meta.textContent += ` · VIX ${ss.lastVix.toFixed(1)}`;
+
+  list.innerHTML = ss.lastDecisions.map(d => {
+    const zFmt = d.z > 0 ? `+${d.z.toFixed(2)}` : d.z.toFixed(2);
+    const zCol = d.action === 'OPENED' ? 'var(--green)' : d.action === 'BLOCKED' ? 'var(--red)' : 'var(--dim2)';
+    return `<div class="dec-row ${d.action}">
+      <span class="dec-action">${
+        d.action === 'OPENED'   ? '✓ OPENED' :
+        d.action === 'BLOCKED'  ? '✗ BLOCKED' :
+        d.action === 'WATCHING' ? '◌ WATCHING' : d.action
+      }</span>
+      <span class="dec-pair">${d.pair}</span>
+      <span class="dec-sector">${d.sector}</span>
+      <span class="dec-z" style="color:${zCol}">${zFmt}</span>
+      <span class="dec-score" style="color:${d.score>=80?'var(--cyan)':'var(--dim2)'}">s=${d.score}</span>
+      <span class="dec-reason">${d.reason || ''}</span>
+    </div>`;
+  }).join('');
+}
+
+// ── SPARKLINE (z over time) ────────────────────────────────
+function sparkZ(hist, tpZ, slZ) {
+  if (!hist || hist.length < 2) return '';
+  const vals = hist.map(h => h.z_current || 0);
+  const lo = Math.min(...vals, -(slZ||4)), hi = Math.max(...vals, slZ||4);
+  const W=300, H=32, r=hi-lo||1;
+  const px=i=>(i/(vals.length-1))*W, py=v=>H-((v-lo)/r)*H;
+  const zero=py(0), tp1=py(tpZ||.5), tp2=py(-(tpZ||.5));
+  const pts=vals.map((v,i)=>px(i).toFixed(1)+','+py(v).toFixed(1)).join(' ');
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <line stroke="var(--red)" stroke-width=".5" stroke-dasharray="2,3" x1="0" y1="${py(slZ||4).toFixed(1)}" x2="${W}" y2="${py(slZ||4).toFixed(1)}"/>
+    <line stroke="var(--red)" stroke-width=".5" stroke-dasharray="2,3" x1="0" y1="${py(-(slZ||4)).toFixed(1)}" x2="${W}" y2="${py(-(slZ||4)).toFixed(1)}"/>
+    <line stroke="var(--green)" stroke-width=".5" stroke-dasharray="2,2" x1="0" y1="${tp1.toFixed(1)}" x2="${W}" y2="${tp1.toFixed(1)}"/>
+    <line stroke="var(--green)" stroke-width=".5" stroke-dasharray="2,2" x1="0" y1="${tp2.toFixed(1)}" x2="${W}" y2="${tp2.toFixed(1)}"/>
+    <line stroke="var(--dim2)" stroke-width=".8" x1="0" y1="${zero.toFixed(1)}" x2="${W}" y2="${zero.toFixed(1)}"/>
+    <polyline class="spark-line" points="${pts}"/>
+  </svg>`;
+}
+
+// ── PAIR POSITIONS ─────────────────────────────────────────
+function renderPairs(pairs) {
+  document.getElementById('tb-pairs').textContent = pairs.filter(p=>p.status==='OPEN').length;
+  const grid = document.getElementById('pairs-grid');
+  if (!pairs.length) {
+    grid.innerHTML = '<div class="empty-state">NO PAIR POSITIONS<br><span style="font-size:11px;font-family:JetBrains Mono">positions open automatically when signals exceed auto-trade threshold</span></div>';
+    return;
+  }
+  grid.innerHTML = '';
+  for (const p of pairs) {
+    const L=p.latest, zN=L?L.z_current:null, pct=L?L.pnl_pct:null;
+    const isLong = p.direction === 'LONG_A_SHORT_B';
+    const cls = pct!==null ? (pct>=0?'up':'dn') : 'neu';
+    const ageDays = ((Date.now()-new Date(p.opened_at))/86400000).toFixed(1);
+    let zprog=0, zcol='var(--cyan2)';
+    if (zN!==null && p.z_entry) {
+      const range=Math.abs(p.z_entry)-(p.tp_z||.5), rem=Math.abs(zN)-(p.tp_z||.5);
+      zprog=Math.max(0,Math.min(100,(1-rem/range)*100));
+      zcol = Math.abs(zN) > Math.abs(p.z_entry) ? 'var(--red)' : 'var(--green)';
+    }
+    const c=document.createElement('div');
+    c.className=`pair-card ${p.direction}${p.status!=='OPEN'?' '+p.status:''}`;
+    c.innerHTML=`
+      <div class="pc-top">
+        <div>
+          <div class="pc-tickers">${p.ticker_a}<span style="color:var(--dim2)"> / ${p.ticker_b}</span></div>
+          <div class="pc-meta">${p.sector} · HL ${p.half_life}d · β ${(+p.hedge_ratio).toFixed(3)}</div>
+        </div>
+        <div style="text-align:right">
+          <div class="dir-pill ${isLong?'long':'short'}">${isLong?'▲ LONG A':'▼ SHORT A'}</div>
+          ${p.status!=='OPEN'?`<div style="font-size:9px;color:var(--amber);margin-top:4px">${p.status}</div>`:''}
+        </div>
+      </div>
+      <div class="pc-row"><span class="pc-lbl">Z ENTRY → NOW</span>
+        <span class="pc-val">${(+p.z_entry).toFixed(3)} → <span style="color:${zN!==null?(Math.abs(zN)<Math.abs(p.z_entry)?'var(--green)':'var(--red)'):'var(--dim2)'}">${zN!==null?(+zN).toFixed(3):'–'}</span></span></div>
+      <div class="pc-row"><span class="pc-lbl">NOTIONAL · AGE · TP / SL</span>
+        <span class="pc-val">€${(+p.notional_eur).toFixed(0)} · ${ageDays}d · ${p.tp_z}→${p.sl_z}</span></div>
+      <div class="pnl-big ${cls}">${pct!==null?(pct>=0?'+':'')+pct.toFixed(2)+'%':'PENDING'}${L&&L.pnl_eur!=null?`<span style="font-size:14px;margin-left:10px;opacity:.6">${L.pnl_eur>=0?'+':''}€${L.pnl_eur.toFixed(2)}</span>`:''}
+      </div>
+      <div class="z-track"><div class="z-fill" style="width:${zprog.toFixed(1)}%;background:${zcol}"></div></div>
+      <div class="z-labels"><span>entry ${(+p.z_entry).toFixed(2)}</span><span>TP ≤${p.tp_z}</span></div>
+      ${sparkZ(p.history,p.tp_z,p.sl_z)}`;
+    grid.appendChild(c);
+  }
+}
+
+// ── SIGNALS TABLE ──────────────────────────────────────────
+function renderSignals(signals) {
+  document.getElementById('tb-signals').textContent = signals.length;
+  document.getElementById('sig-tbody').innerHTML = signals.map(s => {
+    const sc = s.score>=80?'style="color:var(--green)"':s.score>=65?'style="color:var(--amber)"':'';
+    const dc = s.direction==='LONG_A_SHORT_B'?'style="color:var(--green)"':'style="color:var(--red)"';
+    return `<tr>
+      <td style="color:var(--dim2)">${s.ts.slice(11,16)}</td>
+      <td style="color:var(--cyan2)">${s.ticker_a}/${s.ticker_b}${s.cross_currency?'<span style="color:var(--purple);font-size:9px;margin-left:4px">FX</span>':''}</td>
+      <td style="color:var(--dim2)">${s.sector}</td>
+      <td ${dc}>${s.direction==='LONG_A_SHORT_B'?'▲ LONG A':'▼ SHORT A'}</td>
+      <td style="color:${Math.abs(s.z_score)>=2.5?'var(--green)':'var(--text)'}">${(+s.z_score).toFixed(3)}</td>
+      <td>${s.half_life}d</td>
+      <td style="color:${s.coint_pval<.05?'var(--green)':'var(--text)'}">${(+s.coint_pval).toFixed(3)}</td>
+      <td style="color:${s.oos_pvalue&&s.oos_pvalue<.10?'var(--green)':'var(--dim2)'}">${s.oos_pvalue!=null?(+s.oos_pvalue).toFixed(3):'–'}</td>
+      <td style="color:${s.hl_cv>0.4?'var(--amber)':'var(--dim2)'}">${s.hl_cv!=null?(+s.hl_cv).toFixed(2):'–'}</td>
+      <td ${sc}>${s.score}</td>
+      <td class="${s.confidence==='HIGH'?'style="color:var(--green)"':'style="color:var(--amber)"'}">${s.confidence}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── CONFIG ─────────────────────────────────────────────────
+function loadConfig() {
+  fetch('/config').then(r=>r.json()).then(c => {
+    document.getElementById('cfg-score').value    = c.autoTradeScore;
+    document.getElementById('cfg-score-num').value= c.autoTradeScore;
+    document.getElementById('cfg-score-val').textContent = c.autoTradeScore;
+    document.getElementById('cfg-vix').value      = c.vixThreshold;
+    document.getElementById('cfg-vix-num').value  = c.vixThreshold;
+    document.getElementById('cfg-vix-val').textContent   = c.vixThreshold;
+    document.getElementById('cfg-maxpos').value   = c.maxOpenPositions;
+    document.getElementById('cfg-maxpos-num').value=c.maxOpenPositions;
+    document.getElementById('cfg-maxpos-val').textContent=c.maxOpenPositions;
+    document.getElementById('cfg-maxsec').value   = c.maxPerSector;
+    document.getElementById('cfg-maxsec-num').value=c.maxPerSector;
+    document.getElementById('cfg-maxsec-val').textContent=c.maxPerSector;
+    document.getElementById('cfg-ro-vals').innerHTML =
+      `Scan interval <b>${c.intervalMinutes} min</b> &nbsp;·&nbsp; ` +
+      `Risk/trade <b>${c.riskPct}%</b> &nbsp;·&nbsp; ` +
+      `Bid-ask <b>${c.bidAskBps}bps</b> &nbsp;·&nbsp; ` +
+      `Slippage <b>${c.slippageBps}bps</b> &nbsp;·&nbsp; ` +
+      `Mode <b>${c.paperMode?'PAPER':'⚠ LIVE'}</b>`;
+  });
+}
+
+function saveConfig() {
+  const body = {
+    autoTradeScore:   +document.getElementById('cfg-score-num').value,
+    vixThreshold:     +document.getElementById('cfg-vix-num').value,
+    maxOpenPositions: +document.getElementById('cfg-maxpos-num').value,
+    maxPerSector:     +document.getElementById('cfg-maxsec-num').value,
+  };
+  fetch('/config', { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) })
+    .then(r=>r.json()).then(() => {
+      const btn = document.querySelector('.btn-save');
+      btn.textContent = '✓ APPLIED';
+      btn.style.borderColor = 'var(--green)';
+      setTimeout(() => { btn.textContent='APPLY CHANGES'; btn.style.borderColor='var(--green)'; }, 2000);
+    });
+}
+
+// ── LOG ─────────────────────────────────────────────────────
+function renderLog(events) {
+  document.getElementById('event-list').innerHTML = events.map(e =>
+    `<div class="log-row">
+      <span class="log-ts">${e.ts.slice(11,19)}</span>
+      <span class="log-evt evt-${e.event}">${e.event}</span>
+      <span class="log-det">${e.details||''}</span>
+    </div>`).join('');
+}
+
+// ── STATS ────────────────────────────────────────────────────
+function renderStats(st, stats) {
+  document.getElementById('s-open').textContent   = stats.open  ?? '–';
+  document.getElementById('s-tp').textContent     = stats.tp    ?? '–';
+  document.getElementById('s-sl').textContent     = stats.sl    ?? '–';
+  document.getElementById('s-sigs24').textContent = stats.signals24 ?? '–';
+  document.getElementById('h-balance').textContent = stats.balance!=null
+    ? '€'+stats.balance.toLocaleString('de-DE',{minimumFractionDigits:2}) : '€–';
+
+  const ap=stats.avgPnl, apEl=document.getElementById('s-avgpnl');
+  apEl.textContent=ap!=null?(ap>=0?'+':'')+ap.toFixed(1)+'%':'–';
+  apEl.style.color=ap>0?'var(--green)':ap<0?'var(--red)':'var(--cyan)';
+
+  const ret=stats.totalReturn, rEl=document.getElementById('s-totalret');
+  rEl.textContent=ret!=null?(ret>=0?'+':'')+ret+'%':'–';
+  rEl.style.color=ret>0?'var(--green)':ret<0?'var(--red)':'var(--cyan)';
+  document.getElementById('h-return').textContent=ret!=null?(ret>=0?'▲':'▼')+Math.abs(ret)+'%':'';
+  document.getElementById('h-return').style.color=ret>0?'var(--green)':'var(--red)';
+
+  const mb=document.getElementById('mode-badge');
+  mb.className='mode-badge '+(st.config.paperMode?'mode-paper':'mode-live');
+  mb.textContent=st.config.paperMode?'PAPER':'LIVE';
+  document.getElementById('bt-mode').textContent=st.config.paperMode?'PAPER':'⚠ LIVE';
+  document.getElementById('bt-ts').textContent=new Date().toLocaleTimeString('de-DE');
+}
+
+// ── FULL RENDER ───────────────────────────────────────────────
+function render(st) {
+  renderStats(st, st.stats);
+  renderPairs(st.pairPositions || []);
+  renderSignals(st.signals     || []);
+  renderLog(st.events          || []);
+}
+
+// ── BOOT ──────────────────────────────────────────────────────
+fetch('/state').then(r=>r.json()).then(st => {
+  state=st; scanSt=st.scanState;
+  render(st);
+  if (scanSt) { renderScanStatus(scanSt); if (scanSt.lastDecisions) renderDecisions(scanSt); }
+});
+</script>
+</body>
+</html>

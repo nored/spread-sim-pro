@@ -1,0 +1,17 @@
+{
+  "name": "spread-sim-pro",
+  "version": "3.0.0",
+  "description": "European Spread Scanner + Auto-Trader",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "paper": "IBKR_PAPER=true node server.js"
+  },
+  "dependencies": {
+    "@stoqey/ib": "^1.0.53",
+    "better-sqlite3": "^9.4.3",
+    "express": "^4.18.2",
+    "nodemailer": "^6.9.9",
+    "yahoo-finance2": "^3.14.0"
+  }
+}
