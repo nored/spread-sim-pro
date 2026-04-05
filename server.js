@@ -118,13 +118,13 @@ function riskPhase() {
     // Big positions, few constraints, no drawdown brake
     return {
       name:            'AGGRESSIVE',
-      maxRiskPct:      0.10,          // 10% per trade
-      kellyMultiplier: 0.50,          // half-Kelly (full Kelly is too volatile)
+      maxRiskPct:      0.06,          // 6% per trade (backtest: 10% too volatile, 6% optimal)
+      kellyMultiplier: 0.50,          // half-Kelly
       maxPositions:    4,             // concentrated
       maxPerSector:    2,
-      drawdownLimit:   1.00,          // effectively off — accept total loss
+      drawdownLimit:   0.40,          // 40% — aggressive but not suicidal
       tpMultiplier:    0.15,          // tighter TP — take profits faster
-      slMultiplier:    2.00,          // wider SL — give trades room
+      slMultiplier:    1.30,          // tighter SL — cut losers faster (backtest: 2.0 too wide)
     };
   }
 

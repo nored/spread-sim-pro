@@ -181,7 +181,7 @@ const CONFIG = {
   oosAlpha:      0.15,   // walk-forward ADF threshold (lenient: shorter series)
   hlCvMax:       0.50,   // max coefficient of variation of half-life across sub-periods
   maxBetaDrift:  1.50,   // max fractional drift between Kalman and OLS hedge ratio (Kalman adapts over 3yr window — large drift is normal)
-  hurstMax:      0.55,   // reject pairs with H >= 0.55 (0.48 was too strict for real financial spreads)
+  hurstMax:      1.00,   // effectively disabled — R/S Hurst is biased >0.8 for financial spreads; ADF handles mean-reversion
   minSpreadIR:   0.20,   // minimum annualized information ratio of canonical spread
   minVolumeUSD:  5_000_000,    // $5M median daily turnover (20M was killing European/shipping names)
 };
