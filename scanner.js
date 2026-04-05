@@ -25,6 +25,7 @@ const db = require('./db');
 
 // ── Universe ────────────────────────────────────────────
 const UNIVERSE = [
+  // ── DEFENSE (17) ──────────────────────────────────────
   { ticker: 'LMT',     name: 'Lockheed Martin',   sector: 'DEFENSE'    },
   { ticker: 'RTX',     name: 'Raytheon',           sector: 'DEFENSE'    },
   { ticker: 'NOC',     name: 'Northrop Grumman',   sector: 'DEFENSE'    },
@@ -42,6 +43,7 @@ const UNIVERSE = [
   { ticker: 'AIR.PA',  name: 'Airbus',             sector: 'DEFENSE'    },
   { ticker: 'MTX.DE',  name: 'MTU Aero Engines',   sector: 'DEFENSE'    },
   { ticker: 'ESLT',    name: 'Elbit Systems',      sector: 'DEFENSE'    },
+  // ── ENERGY (13) ───────────────────────────────────────
   { ticker: 'XOM',     name: 'ExxonMobil',         sector: 'ENERGY'     },
   { ticker: 'CVX',     name: 'Chevron',            sector: 'ENERGY'     },
   { ticker: 'HAL',     name: 'Halliburton',        sector: 'ENERGY'     },
@@ -55,17 +57,28 @@ const UNIVERSE = [
   { ticker: 'BP.L',    name: 'BP',                 sector: 'ENERGY'     },
   { ticker: 'EQNR.OL', name: 'Equinor',            sector: 'ENERGY'     },
   { ticker: 'ENI.MI',  name: 'ENI',                sector: 'ENERGY'     },
+  // ── SHIPPING (6) ──────────────────────────────────────
   { ticker: 'FRO',     name: 'Frontline',          sector: 'SHIPPING'   },
   { ticker: 'STNG',    name: 'Scorpio Tankers',    sector: 'SHIPPING'   },
   { ticker: 'DHT',     name: 'DHT Holdings',       sector: 'SHIPPING'   },
   { ticker: 'INSW',    name: 'Intl Seaways',       sector: 'SHIPPING'   },
   { ticker: 'NAT',     name: 'Nordic American',    sector: 'SHIPPING'   },
   { ticker: 'TRMD',    name: 'TORM',               sector: 'SHIPPING'   },
+  // ── COMMODITY (4) ─────────────────────────────────────
   { ticker: 'GLD',     name: 'Gold ETF',           sector: 'COMMODITY'  },
   { ticker: 'USO',     name: 'Oil ETF',            sector: 'COMMODITY'  },
   { ticker: 'UNG',     name: 'Natural Gas ETF',    sector: 'COMMODITY'  },
   { ticker: 'SLV',     name: 'Silver ETF',         sector: 'COMMODITY'  },
-  { ticker: 'VXX',     name: 'VIX Short-Term',     sector: 'VOLATILITY' },
+  // ── SEMICONDUCTORS (8) ────────────────────────────────
+  { ticker: 'NVDA',    name: 'NVIDIA',             sector: 'SEMIS'      },
+  { ticker: 'AMD',     name: 'AMD',                sector: 'SEMIS'      },
+  { ticker: 'INTC',    name: 'Intel',              sector: 'SEMIS'      },
+  { ticker: 'TSM',     name: 'TSMC',               sector: 'SEMIS'      },
+  { ticker: 'QCOM',    name: 'Qualcomm',           sector: 'SEMIS'      },
+  { ticker: 'MU',      name: 'Micron',             sector: 'SEMIS'      },
+  { ticker: 'LRCX',    name: 'Lam Research',       sector: 'SEMIS'      },
+  { ticker: 'AMAT',    name: 'Applied Materials',  sector: 'SEMIS'      },
+  // ── TECH/CYBER (8) ────────────────────────────────────
   { ticker: 'ASML.AS', name: 'ASML',               sector: 'TECH'       },
   { ticker: 'SAP.DE',  name: 'SAP',                sector: 'TECH'       },
   { ticker: 'SIE.DE',  name: 'Siemens',            sector: 'TECH'       },
@@ -74,6 +87,7 @@ const UNIVERSE = [
   { ticker: 'CRWD',    name: 'CrowdStrike',        sector: 'TECH'       },
   { ticker: 'FTNT',    name: 'Fortinet',           sector: 'TECH'       },
   { ticker: 'ZS',      name: 'Zscaler',            sector: 'TECH'       },
+  // ── BANKS EU (7) ──────────────────────────────────────
   { ticker: 'DBK.DE',  name: 'Deutsche Bank',      sector: 'BANKS'      },
   { ticker: 'BNP.PA',  name: 'BNP Paribas',        sector: 'BANKS'      },
   { ticker: 'HSBA.L',  name: 'HSBC',               sector: 'BANKS'      },
@@ -81,10 +95,61 @@ const UNIVERSE = [
   { ticker: 'UCG.MI',  name: 'UniCredit',          sector: 'BANKS'      },
   { ticker: 'ING.AS',  name: 'ING',                sector: 'BANKS'      },
   { ticker: 'CBK.DE',  name: 'Commerzbank',        sector: 'BANKS'      },
+  // ── BANKS US (6) ──────────────────────────────────────
+  { ticker: 'JPM',     name: 'JPMorgan',           sector: 'US_BANKS'   },
+  { ticker: 'BAC',     name: 'Bank of America',    sector: 'US_BANKS'   },
+  { ticker: 'GS',      name: 'Goldman Sachs',      sector: 'US_BANKS'   },
+  { ticker: 'MS',      name: 'Morgan Stanley',     sector: 'US_BANKS'   },
+  { ticker: 'C',       name: 'Citigroup',          sector: 'US_BANKS'   },
+  { ticker: 'WFC',     name: 'Wells Fargo',        sector: 'US_BANKS'   },
+  // ── MINING (7) ────────────────────────────────────────
+  { ticker: 'NEM',     name: 'Newmont',            sector: 'MINING'     },
+  { ticker: 'GOLD',    name: 'Barrick Gold',       sector: 'MINING'     },
+  { ticker: 'FCX',     name: 'Freeport-McMoRan',   sector: 'MINING'     },
+  { ticker: 'BHP',     name: 'BHP Group',          sector: 'MINING'     },
+  { ticker: 'RIO',     name: 'Rio Tinto',          sector: 'MINING'     },
+  { ticker: 'VALE',    name: 'Vale',               sector: 'MINING'     },
+  { ticker: 'SCCO',    name: 'Southern Copper',    sector: 'MINING'     },
+  // ── PHARMA (8) ────────────────────────────────────────
+  { ticker: 'JNJ',     name: 'Johnson & Johnson',  sector: 'PHARMA'     },
+  { ticker: 'PFE',     name: 'Pfizer',             sector: 'PHARMA'     },
+  { ticker: 'MRK',     name: 'Merck',              sector: 'PHARMA'     },
+  { ticker: 'ABBV',    name: 'AbbVie',             sector: 'PHARMA'     },
+  { ticker: 'LLY',     name: 'Eli Lilly',          sector: 'PHARMA'     },
+  { ticker: 'NVO',     name: 'Novo Nordisk',       sector: 'PHARMA'     },
+  { ticker: 'AZN.L',   name: 'AstraZeneca',        sector: 'PHARMA'     },
+  { ticker: 'ROG.SW',  name: 'Roche',              sector: 'PHARMA'     },
+  // ── AUTOS (6) ─────────────────────────────────────────
+  { ticker: 'BMW.DE',  name: 'BMW',                sector: 'AUTOS'      },
+  { ticker: 'MBG.DE',  name: 'Mercedes-Benz',      sector: 'AUTOS'      },
+  { ticker: 'VOW3.DE', name: 'Volkswagen',         sector: 'AUTOS'      },
+  { ticker: 'STLA',    name: 'Stellantis',         sector: 'AUTOS'      },
+  { ticker: 'TM',      name: 'Toyota',             sector: 'AUTOS'      },
+  { ticker: 'F',       name: 'Ford',               sector: 'AUTOS'      },
+  // ── INFRA (6) ─────────────────────────────────────────
   { ticker: 'RWE.DE',  name: 'RWE',                sector: 'INFRA'      },
   { ticker: 'ENEL.MI', name: 'Enel',               sector: 'INFRA'      },
   { ticker: 'NEE',     name: 'NextEra Energy',     sector: 'INFRA'      },
   { ticker: 'PWR',     name: 'Quanta Services',    sector: 'INFRA'      },
+  { ticker: 'DUK',     name: 'Duke Energy',        sector: 'INFRA'      },
+  { ticker: 'SO',      name: 'Southern Company',   sector: 'INFRA'      },
+  // ── FX – COMMODITY BLOCK (5) ──────────────────────────
+  // AUD/NZD is the classic mean-reverting FX pair. Both commodity
+  // exporters, neighboring economies, correlated rate cycles.
+  // CAD same story (oil/commodity currency). NOK/SEK = Scandinavian block.
+  // System pairs them automatically: AUD vs NZD, AUD vs CAD, NOK vs SEK, etc.
+  { ticker: 'AUDUSD=X', name: 'AUD/USD',           sector: 'FX_COMMODITY' },
+  { ticker: 'NZDUSD=X', name: 'NZD/USD',           sector: 'FX_COMMODITY' },
+  { ticker: 'CADUSD=X', name: 'CAD/USD',           sector: 'FX_COMMODITY' },
+  { ticker: 'NOKUSD=X', name: 'NOK/USD',           sector: 'FX_COMMODITY' },
+  { ticker: 'SEKUSD=X', name: 'SEK/USD',           sector: 'FX_COMMODITY' },
+  // ── FX – MAJOR BLOCK (4) ─────────────────────────────
+  // EUR/CHF and EUR/GBP are tightly bound by trade flows and geography.
+  // JPY as the global carry-trade anchor.
+  { ticker: 'EURUSD=X', name: 'EUR/USD',           sector: 'FX_MAJOR'   },
+  { ticker: 'GBPUSD=X', name: 'GBP/USD',           sector: 'FX_MAJOR'   },
+  { ticker: 'CHFUSD=X', name: 'CHF/USD',           sector: 'FX_MAJOR'   },
+  { ticker: 'JPYUSD=X', name: 'JPY/USD',           sector: 'FX_MAJOR'   },
 ];
 
 // ── Rate Limit Configuration ────────────────────────────
@@ -115,21 +180,22 @@ const CONFIG = {
   maxAdfLags:    4,      // maximum ADF lag order for AIC selection
   oosAlpha:      0.15,   // walk-forward ADF threshold (lenient: shorter series)
   hlCvMax:       0.50,   // max coefficient of variation of half-life across sub-periods
-  maxBetaDrift:  0.50,   // max fractional drift between Kalman and OLS hedge ratio (relaxed for cross-sector pairs in volatile markets)
-  hurstMax:      0.48,   // reject pairs with H >= 0.48 (not genuinely mean-reverting)
+  maxBetaDrift:  1.50,   // max fractional drift between Kalman and OLS hedge ratio (Kalman adapts over 3yr window — large drift is normal)
+  hurstMax:      0.55,   // reject pairs with H >= 0.55 (0.48 was too strict for real financial spreads)
   minSpreadIR:   0.20,   // minimum annualized information ratio of canonical spread
-  minVolumeUSD:  20_000_000,   // $20M median daily turnover
+  minVolumeUSD:  5_000_000,    // $5M median daily turnover (20M was killing European/shipping names)
 };
 
 // ── FX Configuration ────────────────────────────────────
 // All prices converted to USD before cointegration testing.
 // Fetched once per scan run, aligned with equity series by length.
-const FX_MAP = { EUR: 'EURUSD=X', GBP: 'GBPUSD=X', NOK: 'NOKUSD=X' };
+const FX_MAP = { EUR: 'EURUSD=X', GBP: 'GBPUSD=X', NOK: 'NOKUSD=X', CHF: 'CHFUSD=X' };
 
 function getCurrency(ticker) {
   if (/\.(DE|PA|AS|MI|MC)$/.test(ticker)) return 'EUR';
   if (/\.L$/.test(ticker))                return 'GBP';
   if (/\.OL$/.test(ticker))               return 'NOK';
+  if (/\.SW$/.test(ticker))               return 'CHF';
   return 'USD';
 }
 
@@ -658,9 +724,10 @@ function halfLifeStability(canonical) {
 // This also eliminates the BA-direction inversion bug (Bug 8): regardless of
 // which OLS direction won the bidirectional EG test, the canonical spread is
 // always expressed in A-on-B terms so z-score sign and ou_theta are consistent.
-function completePairAnalysis(raw, sameSector) {
+function completePairAnalysis(raw, sameSector, funnel) {
   const { hedgeRatio, adf, entryA, entryB, pa, pb, crossCurrency, egDirection,
           logA_usd, logB_usd } = raw;
+  const pair = `${entryA.ticker}/${entryB.ticker}`;
 
   // raw.spread is the canonical OLS spread: logA - hedgeRatio * logB.
   // Non-zero mean = OLS alpha. Zero-mean residuals for ADF-based checks
@@ -670,7 +737,7 @@ function completePairAnalysis(raw, sameSector) {
   const residuals   = canonical.map(c => c - spreadMean);  // zero-mean OLS residuals
 
   // Stability check MUST use zero-mean residuals — see isStable docstring.
-  if (!isStable(residuals)) return null;
+  if (!isStable(residuals)) { if (funnel) funnel.stability++; return null; }
 
   // Run Kalman to get the current adaptive hedge ratio estimate.
   const [laU, lbU] = alignSeries(logA_usd, logB_usd);
@@ -679,32 +746,32 @@ function completePairAnalysis(raw, sameSector) {
 
   // Hedge ratio drift filter
   const betaDrift = Math.abs(kalmanBeta - hedgeRatio) / Math.abs(hedgeRatio);
-  if (betaDrift > CONFIG.maxBetaDrift) return null;
+  if (betaDrift > CONFIG.maxBetaDrift) { if (funnel) funnel.betaDrift++; return null; }
 
   // Hurst exponent filter: reject non-mean-reverting spreads
   const hurst = hurstExponent(canonical);
-  if (hurst >= CONFIG.hurstMax) return null;
+  if (hurst >= CONFIG.hurstMax) { if (funnel) funnel.hurst++; return null; }
 
   // Information ratio filter: reject weak signal-to-noise spreads
-  if (Math.abs(spreadIR(canonical)) < CONFIG.minSpreadIR) return null;
+  if (Math.abs(spreadIR(canonical)) < CONFIG.minSpreadIR) { if (funnel) funnel.spreadIR++; return null; }
 
   // OU parameters on canonical spread
   const ou = ouFit(canonical);
-  if (!ou) return null;
-  if (ou.halfLife < CONFIG.halfLifeMin || ou.halfLife > CONFIG.halfLifeMax) return null;
+  if (!ou) { if (funnel) funnel.ouFit++; return null; }
+  if (ou.halfLife < CONFIG.halfLifeMin || ou.halfLife > CONFIG.halfLifeMax) { if (funnel) funnel.halfLife++; return null; }
 
   // Half-life stability: reject if reversion speed is inconsistent across sub-periods
   const stability = halfLifeStability(canonical);
-  if (stability.cv > CONFIG.hlCvMax) return null;
+  if (stability.cv > CONFIG.hlCvMax) { if (funnel) funnel.hlCv++; return null; }
 
   // Walk-forward validation: cointegration must hold out-of-sample
   const wf = walkForwardCheck(logA_usd, logB_usd);
-  if (!wf.pass) return null;
+  if (!wf.pass) { if (funnel) funnel.walkForward++; return null; }
 
   // Z-score on canonical spread
   const zWindow = Math.max(20, Math.round(2 * ou.halfLife));
   const z = rollingZScore(canonical, zWindow);
-  if (z === null || Math.abs(z) < CONFIG.zScoreEntry) return null;
+  if (z === null || Math.abs(z) < CONFIG.zScoreEntry) { if (funnel) funnel.zScore++; return null; }
 
   // Both OLS directions now use canonical form logA - hedgeRatio * logB.
   // z > 0: spread above mean → A is expensive vs B → SHORT A, LONG B.
@@ -851,15 +918,22 @@ async function scanAll(opts) {
   // ── Pass 2: complete analysis for BH survivors ───────
   const ts      = new Date().toISOString();
   const signals = [];
+  const funnel  = { stability:0, betaDrift:0, hurst:0, spreadIR:0, ouFit:0, halfLife:0, hlCv:0, walkForward:0, zScore:0 };
   for (let i = 0; i < rawResults.length; i++) {
     if (!survived.has(i)) continue;
-    const result = completePairAnalysis(rawResults[i].raw, rawResults[i].sameSector);
+    const result = completePairAnalysis(rawResults[i].raw, rawResults[i].sameSector, funnel);
     if (!result) continue;
     const id = db.insertSpreadSignal({ ts, ...result });
     result.id = id;
     signals.push(result);
     onProgress({ phase: 'analyzing', signalsFound: signals.length });
   }
+
+  // Log filter funnel so the user always sees where pairs die
+  const funnelParts = Object.entries(funnel).filter(([,v]) => v > 0).map(([k,v]) => `${k}=${v}`);
+  const rejected = Object.values(funnel).reduce((a,b) => a+b, 0);
+  db.log('SCAN_FUNNEL',
+    `${survived.size} BH survivors → ${rejected} rejected [${funnelParts.join(' ')}] → ${signals.length} signals`);
 
   signals.sort((a, b) => Math.abs(b.z_score) - Math.abs(a.z_score));
   db.log('SCAN_DONE',

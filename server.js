@@ -21,7 +21,7 @@ const express    = require('express');
 const path       = require('path');
 const nodemailer = require('nodemailer');
 const db         = require('./db');
-const { scanAll } = require('./scanner');
+const { scanAll, CONFIG: SCANNER_CONFIG } = require('./scanner');
 const yahooFinance = require('yahoo-finance2').default;
 // Direct Yahoo Finance v8 API
 const https = require('https');
@@ -66,12 +66,13 @@ function isEarningsNear(earningsTs, daysWindow = 5) {
 }
 
 // ── FX HELPERS (cross-currency P&L) ─────────────────────
-const FX_MAP = { EUR: 'EURUSD=X', GBP: 'GBPUSD=X', NOK: 'NOKUSD=X' };
+const FX_MAP = { EUR: 'EURUSD=X', GBP: 'GBPUSD=X', NOK: 'NOKUSD=X', CHF: 'CHFUSD=X' };
 
 function getCurrency(ticker) {
   if (/\.(DE|PA|AS|MI|MC)$/.test(ticker)) return 'EUR';
   if (/\.L$/.test(ticker))                return 'GBP';
   if (/\.OL$/.test(ticker))               return 'NOK';
+  if (/\.SW$/.test(ticker))               return 'CHF';
   return 'USD';
 }
 
@@ -103,14 +104,65 @@ async function nearEarnings(ticker, daysWindow = 5) {
   } catch { return false; }
 }
 
+// ── ADAPTIVE RISK PHASES ─────────────────────────────────
+// Small capital → swing hard. As portfolio grows → harden automatically.
+// Phase boundaries are based on multiples of starting capital.
+function riskPhase() {
+  const balance  = db.getBalance();
+  const start    = db.getStartingCapital();
+  const multiple = balance / start;
+
+  if (multiple < 3) {
+    // PHASE 1 — AGGRESSIVE: prove the edge exists
+    // Big positions, few constraints, no drawdown brake
+    return {
+      name:            'AGGRESSIVE',
+      maxRiskPct:      0.10,          // 10% per trade
+      kellyMultiplier: 0.50,          // half-Kelly (full Kelly is too volatile)
+      maxPositions:    4,             // concentrated
+      maxPerSector:    2,
+      drawdownLimit:   1.00,          // effectively off — accept total loss
+      tpMultiplier:    0.15,          // tighter TP — take profits faster
+      slMultiplier:    2.00,          // wider SL — give trades room
+    };
+  }
+
+  if (multiple < 10) {
+    // PHASE 2 — GROWTH: edge proven, grow steadily
+    return {
+      name:            'GROWTH',
+      maxRiskPct:      0.05,          // 5% per trade
+      kellyMultiplier: 0.35,
+      maxPositions:    6,
+      maxPerSector:    2,
+      drawdownLimit:   0.25,          // 25% drawdown limit
+      tpMultiplier:    0.20,
+      slMultiplier:    1.60,
+    };
+  }
+
+  // PHASE 3 — PROTECT: capital is meaningful, preserve it
+  return {
+    name:            'PROTECT',
+    maxRiskPct:      0.02,            // 2% per trade
+    kellyMultiplier: 0.25,            // quarter-Kelly
+    maxPositions:    10,              // diversified
+    maxPerSector:    3,
+    drawdownLimit:   0.12,            // tight 12% drawdown limit
+    tpMultiplier:    0.20,
+    slMultiplier:    1.60,
+  };
+}
+
 // ── KELLY FRACTION (Phase 2.3) ───────────────────────────
 function kellyFraction(zScore, ouSigma, ouKappa, halfLife) {
-  if (!ouSigma || !ouKappa || !halfLife) return db.MAX_RISK_PCT;
+  const phase = riskPhase();
+  if (!ouSigma || !ouKappa || !halfLife) return phase.maxRiskPct;
   const expectedDaily = Math.abs(zScore) * ouKappa * ouSigma;
   const varDaily = ouSigma * ouSigma * ouKappa;
-  if (varDaily <= 0) return db.MAX_RISK_PCT;
+  if (varDaily <= 0) return phase.maxRiskPct;
   const kelly = expectedDaily / varDaily;
-  return Math.min(db.MAX_RISK_PCT, Math.max(0.005, kelly * 0.25));
+  return Math.min(phase.maxRiskPct, Math.max(0.005, kelly * phase.kellyMultiplier));
 }
 
 // ── CONFIG ──────────────────────────────────────────────
@@ -133,8 +185,8 @@ const CONFIG = {
 
   scanner: {
     intervalMinutes: 30,
-    minScore:        65,    // Unter 65 → kein Trade
-    autoTradeScore:  80,    // Ab 80 → automatisch traden
+    minScore:        55,    // Unter 55 → kein Trade
+    autoTradeScore:  65,    // Ab 65 → automatisch traden (80 was too strict — required z>=3.2)
     maxOpenPositions: 6,    // Nie mehr als 6 gleichzeitig
     maxPerSector:     2,    // Nie mehr als 2 pro Sektor
     maxSpreadCorrelation: 0.65,
@@ -246,12 +298,15 @@ function calcTxCost(notional) {
 // ── GATE: Darf ein Trade geöffnet werden? ────────────────
 // Returns { ok, reason } — reason is a human-readable explanation for the decision log.
 function tradeGate(signal) {
+  const phase = riskPhase();
   const open = db.getOpenPairPositions();
-  if (open.length >= CONFIG.scanner.maxOpenPositions)
-    return { ok: false, reason: `position cap ${open.length}/${CONFIG.scanner.maxOpenPositions}` };
+  const maxPos = Math.min(CONFIG.scanner.maxOpenPositions, phase.maxPositions);
+  if (open.length >= maxPos)
+    return { ok: false, reason: `position cap ${open.length}/${maxPos} [${phase.name}]` };
+  const maxSec = Math.min(CONFIG.scanner.maxPerSector, phase.maxPerSector);
   const sectorCount = open.filter(p => p.sector === signal.sector).length;
-  if (sectorCount >= CONFIG.scanner.maxPerSector)
-    return { ok: false, reason: `sector limit ${signal.sector} ${sectorCount}/${CONFIG.scanner.maxPerSector}` };
+  if (sectorCount >= maxSec)
+    return { ok: false, reason: `sector limit ${signal.sector} ${sectorCount}/${maxSec} [${phase.name}]` };
   const lc = open.find(p =>
     p.ticker_a===signal.ticker_a || p.ticker_b===signal.ticker_a ||
     p.ticker_a===signal.ticker_b || p.ticker_b===signal.ticker_b
@@ -294,10 +349,11 @@ function spreadCorrelation(histA, histB) {
 // ── SCANNER MAIN ─────────────────────────────────────────
 async function openPairPosition(sig) {
   const balance   = db.getBalance();
-  // Phase 2.3: Kelly-informed position sizing
+  const phase     = riskPhase();
+  // Phase 2.3: Kelly-informed position sizing (adaptive per risk phase)
   const riskFraction = kellyFraction(sig.z_score, sig.ou_sigma, sig.ou_kappa, sig.half_life);
   const notional  = +(balance * riskFraction).toFixed(4);
-  db.log('KELLY_SIZE', `${sig.ticker_a}/${sig.ticker_b}: fraction=${(riskFraction*100).toFixed(2)}% notional=€${notional.toFixed(2)}`);
+  db.log('KELLY_SIZE', `${sig.ticker_a}/${sig.ticker_b}: phase=${phase.name} fraction=${(riskFraction*100).toFixed(2)}% notional=€${notional.toFixed(2)}`);
   if (notional < 50) {
     db.log('GATE_BLOCK', `Insufficient capital: need €50, have €${notional}`);
     return null;
@@ -306,9 +362,9 @@ async function openPairPosition(sig) {
   const sharesA = +(notional / sig.spot_a).toFixed(6);
   const sharesB = +(sharesA * sig.hedge_ratio * sig.spot_a / sig.spot_b).toFixed(6);
 
-  // Phase 2.4: dynamic TP/SL based on entry z-score
-  const tp_z = +(Math.max(0.3, Math.abs(sig.z_score) * 0.20)).toFixed(2);
-  const sl_z = +(Math.min(6.0, Math.abs(sig.z_score) * 1.60)).toFixed(2);
+  // TP/SL scaled by risk phase — aggressive phase takes profit faster, gives more SL room
+  const tp_z = +(Math.max(0.3, Math.abs(sig.z_score) * phase.tpMultiplier)).toFixed(2);
+  const sl_z = +(Math.min(6.0, Math.abs(sig.z_score) * phase.slMultiplier)).toFixed(2);
 
   const posId = db.insertPairPosition({
     signal_id:    sig.id,
@@ -379,20 +435,20 @@ async function runScanner() {
     },
   });
 
-  // Phase 3: Drawdown circuit breaker
-  const DRAWDOWN_LIMIT = parseFloat(process.env.DRAWDOWN_LIMIT || '0.15');
+  // Drawdown circuit breaker — adaptive per risk phase
+  const phase    = riskPhase();
   const peakBal  = db.getPeakBalance();
   const curBal   = db.getBalance();
   const drawdown = peakBal > 0 ? (peakBal - curBal) / peakBal : 0;
 
-  if (drawdown >= DRAWDOWN_LIMIT) {
+  if (drawdown >= phase.drawdownLimit) {
     db.log('DRAWDOWN_HALT',
       `${(drawdown*100).toFixed(1)}% from peak €${peakBal.toFixed(2)} — no new positions`);
     const strong = signals.filter(s => s.score >= CONFIG.scanner.autoTradeScore);
     const decisions = strong.map(sig => ({
       pair: `${sig.ticker_a}/${sig.ticker_b}`, sector: sig.sector,
       z: sig.z_score, score: sig.score, action: 'BLOCKED',
-      reason: `drawdown ${(drawdown*100).toFixed(1)}% >= ${(DRAWDOWN_LIMIT*100).toFixed(0)}% limit`,
+      reason: `drawdown ${(drawdown*100).toFixed(1)}% >= ${(phase.drawdownLimit*100).toFixed(0)}% limit [${phase.name}]`,
     }));
     scanState.lastDecisions = decisions;
     scanState = { ...scanState, running: false, phase: 'complete',
@@ -462,15 +518,7 @@ async function runScanner() {
       continue;
     }
 
-    // Phase 2.2: earnings proximity filter
-    const [eA, eB] = await Promise.all([nearEarnings(sig.ticker_a), nearEarnings(sig.ticker_b)]);
-    if (eA || eB) {
-      decisions.push({ pair, action: 'BLOCKED', reason: `earnings within 5d: ${eA ? sig.ticker_a : sig.ticker_b}` });
-      db.log('EARNINGS_BLOCK', `${pair}: earnings proximity`);
-      continue;
-    }
-
-    // Phase 3.4: extended earnings check via yfQuoteWithEarnings
+    // Earnings proximity filter (5-day window around earnings dates)
     try {
       const [qA, qB] = await Promise.all([
         yfQuoteWithEarnings(sig.ticker_a).catch(() => null),
@@ -651,6 +699,7 @@ function getStatePayload() {
     return { ...p, latest, history: hist };
   });
 
+  const phase = riskPhase();
   return {
     positions:      [],
     pairPositions,
@@ -663,6 +712,12 @@ function getStatePayload() {
       autoTradeScore: CONFIG.scanner.autoTradeScore,
       minScore:       CONFIG.scanner.minScore,
       pollMinutes:    CONFIG.pnl.pollMinutes,
+    },
+    riskPhase: {
+      name:          phase.name,
+      maxRiskPct:    phase.maxRiskPct,
+      maxPositions:  phase.maxPositions,
+      drawdownLimit: phase.drawdownLimit,
     },
     scanState,
     ts: new Date().toISOString(),
@@ -693,7 +748,11 @@ app.get('/events', (req, res) => {
   clients.add(res);
   // Send current state immediately
   res.write(`data: ${JSON.stringify(getStatePayload())}\n\n`);
-  req.on('close', () => clients.delete(res));
+  // SSE keepalive: send a comment every 25s to prevent browsers/proxies from dropping the connection
+  const heartbeat = setInterval(() => {
+    try { res.write(`: heartbeat ${Date.now()}\n\n`); } catch(_) { clearInterval(heartbeat); }
+  }, 25000);
+  req.on('close', () => { clearInterval(heartbeat); clients.delete(res); });
 });
 
 app.get('/scan/status', (_req, res) => res.json(scanState));
@@ -710,16 +769,37 @@ app.get('/config', (_req, res) => res.json({
   slippageBps:      CONFIG.costs.slippageBps,
   riskPct:          +(db.MAX_RISK_PCT * 100).toFixed(1),
   paperMode:        CONFIG.paperMode,
+  // Scanner filter params (runtime-tunable)
+  hurstMax:         SCANNER_CONFIG.hurstMax,
+  maxBetaDrift:     SCANNER_CONFIG.maxBetaDrift,
+  minSpreadIR:      SCANNER_CONFIG.minSpreadIR,
+  minVolumeUSD:     SCANNER_CONFIG.minVolumeUSD,
+  zScoreEntry:      SCANNER_CONFIG.zScoreEntry,
+  halfLifeMin:      SCANNER_CONFIG.halfLifeMin,
+  halfLifeMax:      SCANNER_CONFIG.halfLifeMax,
+  oosAlpha:         SCANNER_CONFIG.oosAlpha,
+  hlCvMax:          SCANNER_CONFIG.hlCvMax,
 }));
 
 app.patch('/config', requireAuth, (req, res) => {
-  const { autoTradeScore, vixThreshold, maxOpenPositions, maxPerSector } = req.body;
-  if (autoTradeScore    != null && autoTradeScore    >= 50 && autoTradeScore    <= 100) { CONFIG.scanner.autoTradeScore   = +autoTradeScore;    db.log('CONFIG_CHANGE', `autoTradeScore → ${autoTradeScore}`);    }
-  if (vixThreshold      != null && vixThreshold      >= 10 && vixThreshold      <= 80)  { CONFIG.vixThreshold             = +vixThreshold;      db.log('CONFIG_CHANGE', `vixThreshold → ${vixThreshold}`);        }
-  if (maxOpenPositions  != null && maxOpenPositions  >=  1 && maxOpenPositions  <= 20)  { CONFIG.scanner.maxOpenPositions = +maxOpenPositions;  db.log('CONFIG_CHANGE', `maxOpenPositions → ${maxOpenPositions}`);  }
-  if (maxPerSector      != null && maxPerSector      >=  1 && maxPerSector      <= 10)  { CONFIG.scanner.maxPerSector     = +maxPerSector;      db.log('CONFIG_CHANGE', `maxPerSector → ${maxPerSector}`);          }
+  const b = req.body;
+  // Server-level config
+  if (b.autoTradeScore   != null && b.autoTradeScore   >= 50 && b.autoTradeScore   <= 100) { CONFIG.scanner.autoTradeScore  = +b.autoTradeScore;   db.log('CONFIG_CHANGE', `autoTradeScore → ${b.autoTradeScore}`);   }
+  if (b.vixThreshold     != null && b.vixThreshold     >= 10 && b.vixThreshold     <= 80)  { CONFIG.vixThreshold            = +b.vixThreshold;     db.log('CONFIG_CHANGE', `vixThreshold → ${b.vixThreshold}`);       }
+  if (b.maxOpenPositions != null && b.maxOpenPositions >=  1 && b.maxOpenPositions <= 20)  { CONFIG.scanner.maxOpenPositions= +b.maxOpenPositions;  db.log('CONFIG_CHANGE', `maxOpenPositions → ${b.maxOpenPositions}`);}
+  if (b.maxPerSector     != null && b.maxPerSector     >=  1 && b.maxPerSector     <= 10)  { CONFIG.scanner.maxPerSector    = +b.maxPerSector;      db.log('CONFIG_CHANGE', `maxPerSector → ${b.maxPerSector}`);       }
+  // Scanner filter config (writes directly to scanner.js CONFIG object)
+  if (b.hurstMax         != null && b.hurstMax         >= 0.3 && b.hurstMax        <= 0.8) { SCANNER_CONFIG.hurstMax        = +b.hurstMax;         db.log('CONFIG_CHANGE', `hurstMax → ${b.hurstMax}`);               }
+  if (b.maxBetaDrift     != null && b.maxBetaDrift     >= 0.2 && b.maxBetaDrift    <= 5.0) { SCANNER_CONFIG.maxBetaDrift    = +b.maxBetaDrift;     db.log('CONFIG_CHANGE', `maxBetaDrift → ${b.maxBetaDrift}`);       }
+  if (b.minSpreadIR      != null && b.minSpreadIR      >= 0   && b.minSpreadIR     <= 1.0) { SCANNER_CONFIG.minSpreadIR     = +b.minSpreadIR;      db.log('CONFIG_CHANGE', `minSpreadIR → ${b.minSpreadIR}`);         }
+  if (b.minVolumeUSD     != null && b.minVolumeUSD     >= 0   && b.minVolumeUSD    <= 1e9) { SCANNER_CONFIG.minVolumeUSD    = +b.minVolumeUSD;     db.log('CONFIG_CHANGE', `minVolumeUSD → ${b.minVolumeUSD}`);       }
+  if (b.zScoreEntry      != null && b.zScoreEntry      >= 1.0 && b.zScoreEntry     <= 4.0) { SCANNER_CONFIG.zScoreEntry     = +b.zScoreEntry;      db.log('CONFIG_CHANGE', `zScoreEntry → ${b.zScoreEntry}`);         }
+  if (b.halfLifeMin      != null && b.halfLifeMin      >= 1   && b.halfLifeMin     <= 30)  { SCANNER_CONFIG.halfLifeMin     = +b.halfLifeMin;      db.log('CONFIG_CHANGE', `halfLifeMin → ${b.halfLifeMin}`);         }
+  if (b.halfLifeMax      != null && b.halfLifeMax      >= 20  && b.halfLifeMax     <= 200) { SCANNER_CONFIG.halfLifeMax     = +b.halfLifeMax;      db.log('CONFIG_CHANGE', `halfLifeMax → ${b.halfLifeMax}`);         }
+  if (b.oosAlpha         != null && b.oosAlpha         >= 0.01&& b.oosAlpha        <= 0.5) { SCANNER_CONFIG.oosAlpha        = +b.oosAlpha;         db.log('CONFIG_CHANGE', `oosAlpha → ${b.oosAlpha}`);               }
+  if (b.hlCvMax          != null && b.hlCvMax          >= 0.1 && b.hlCvMax         <= 2.0) { SCANNER_CONFIG.hlCvMax         = +b.hlCvMax;          db.log('CONFIG_CHANGE', `hlCvMax → ${b.hlCvMax}`);                 }
   broadcastState();
-  res.json({ ok: true, config: { autoTradeScore: CONFIG.scanner.autoTradeScore, vixThreshold: CONFIG.vixThreshold, maxOpenPositions: CONFIG.scanner.maxOpenPositions, maxPerSector: CONFIG.scanner.maxPerSector } });
+  res.json({ ok: true });
 });
 
 app.post('/scan', requireAuth, async (_req, res) => {

@@ -191,6 +191,7 @@ header{background:var(--bg2);border-bottom:1px solid var(--border2);padding:0 20
 <header>
   <div class="logo">PAIR SCANNER</div>
   <div id="mode-badge" class="mode-badge mode-paper">PAPER</div>
+  <div id="phase-badge" class="mode-badge" style="border-color:var(--amber);color:var(--amber)">–</div>
   <div class="h-sep"></div>
   <div class="h-balance" id="h-balance">€–</div>
   <div class="h-return" id="h-return"></div>
@@ -308,6 +309,87 @@ header{background:var(--bg2);border-bottom:1px solid var(--border2);padding:0 20
       </div>
     </div>
   </div>
+
+  <div style="margin:24px 0 12px;border-top:1px solid var(--border);padding-top:16px">
+    <div style="font-size:9px;color:var(--cyan);letter-spacing:2px;margin-bottom:4px;font-family:Rajdhani,sans-serif;font-weight:600">SCANNER FILTERS</div>
+    <div style="font-size:10px;color:var(--dim2);margin-bottom:12px">These control which pairs survive the analysis pipeline. Too strict = no trades. Too loose = bad trades. The main killers are Hurst, Beta Drift, and Z-Score Entry.</div>
+  </div>
+  <div class="cfg-grid">
+    <div class="cfg-card">
+      <div class="cfg-label">HURST EXPONENT MAX</div>
+      <div class="cfg-desc">Rejects pairs with Hurst >= this value. H &lt; 0.5 = mean-reverting, H = 0.5 = random walk, H &gt; 0.5 = trending. Set too low and nothing passes. 0.55 is a realistic starting point.</div>
+      <div class="cfg-val" id="cfg-hurst-val">0.55</div>
+      <div class="cfg-input">
+        <input type="range" class="cfg-range" id="cfg-hurst" min="0.30" max="0.80" step="0.01" value="0.55" oninput="document.getElementById('cfg-hurst-val').textContent=(+this.value).toFixed(2);document.getElementById('cfg-hurst-num').value=this.value">
+        <input type="number" class="cfg-num" id="cfg-hurst-num" value="0.55" min="0.30" max="0.80" step="0.01" oninput="document.getElementById('cfg-hurst').value=this.value;document.getElementById('cfg-hurst-val').textContent=(+this.value).toFixed(2)">
+      </div>
+    </div>
+    <div class="cfg-card">
+      <div class="cfg-label">MAX BETA DRIFT</div>
+      <div class="cfg-desc">Max allowed drift between Kalman and OLS hedge ratio (as a fraction). Over a 3-year window the Kalman adapts — drift of 1.0 (100%) is normal. Below 0.5 kills almost everything.</div>
+      <div class="cfg-val" id="cfg-drift-val">1.50</div>
+      <div class="cfg-input">
+        <input type="range" class="cfg-range" id="cfg-drift" min="0.20" max="5.00" step="0.10" value="1.50" oninput="document.getElementById('cfg-drift-val').textContent=(+this.value).toFixed(1);document.getElementById('cfg-drift-num').value=this.value">
+        <input type="number" class="cfg-num" id="cfg-drift-num" value="1.50" min="0.20" max="5.00" step="0.10" oninput="document.getElementById('cfg-drift').value=this.value;document.getElementById('cfg-drift-val').textContent=(+this.value).toFixed(1)">
+      </div>
+    </div>
+    <div class="cfg-card">
+      <div class="cfg-label">Z-SCORE ENTRY THRESHOLD</div>
+      <div class="cfg-desc">Minimum |z-score| to generate a signal. Lower = more signals but weaker entries. 1.5 is moderate, 2.0 is conservative, 2.5+ is very selective.</div>
+      <div class="cfg-val" id="cfg-zentry-val">2.0</div>
+      <div class="cfg-input">
+        <input type="range" class="cfg-range" id="cfg-zentry" min="1.0" max="4.0" step="0.1" value="2.0" oninput="document.getElementById('cfg-zentry-val').textContent=(+this.value).toFixed(1);document.getElementById('cfg-zentry-num').value=this.value">
+        <input type="number" class="cfg-num" id="cfg-zentry-num" value="2.0" min="1.0" max="4.0" step="0.1" oninput="document.getElementById('cfg-zentry').value=this.value;document.getElementById('cfg-zentry-val').textContent=(+this.value).toFixed(1)">
+      </div>
+    </div>
+    <div class="cfg-card">
+      <div class="cfg-label">MIN SPREAD INFO RATIO</div>
+      <div class="cfg-desc">Minimum annualized information ratio. Measures signal strength vs noise. Below this the spread won't reliably cover transaction costs. 0.10 is loose, 0.20 moderate.</div>
+      <div class="cfg-val" id="cfg-ir-val">0.20</div>
+      <div class="cfg-input">
+        <input type="range" class="cfg-range" id="cfg-ir" min="0" max="1.0" step="0.05" value="0.20" oninput="document.getElementById('cfg-ir-val').textContent=(+this.value).toFixed(2);document.getElementById('cfg-ir-num').value=this.value">
+        <input type="number" class="cfg-num" id="cfg-ir-num" value="0.20" min="0" max="1.0" step="0.05" oninput="document.getElementById('cfg-ir').value=this.value;document.getElementById('cfg-ir-val').textContent=(+this.value).toFixed(2)">
+      </div>
+    </div>
+    <div class="cfg-card">
+      <div class="cfg-label">MIN VOLUME (USD)</div>
+      <div class="cfg-desc">Minimum median daily dollar volume. Filters illiquid tickers where bid-ask is wide. $5M includes most European names, $20M excludes many.</div>
+      <div class="cfg-val" id="cfg-vol-val">5M</div>
+      <div class="cfg-input">
+        <input type="range" class="cfg-range" id="cfg-vol" min="0" max="100" step="1" value="5" oninput="document.getElementById('cfg-vol-val').textContent=this.value+'M';document.getElementById('cfg-vol-num').value=this.value">
+        <input type="number" class="cfg-num" id="cfg-vol-num" value="5" min="0" max="100" step="1" oninput="document.getElementById('cfg-vol').value=this.value;document.getElementById('cfg-vol-val').textContent=this.value+'M'">
+      </div>
+    </div>
+    <div class="cfg-card">
+      <div class="cfg-label">HALF-LIFE RANGE (DAYS)</div>
+      <div class="cfg-desc">Accepted OU half-life range. Too short = noisy, too long = slow reversion. Default 5-60 days. Wider range = more pairs but weaker mean-reversion guarantee.</div>
+      <div class="cfg-val" id="cfg-hl-val">5 – 60</div>
+      <div class="cfg-input" style="display:flex;gap:6px;align-items:center">
+        <input type="number" class="cfg-num" id="cfg-hlmin-num" value="5" min="1" max="30" style="width:50px" oninput="document.getElementById('cfg-hl-val').textContent=this.value+' – '+document.getElementById('cfg-hlmax-num').value">
+        <span style="color:var(--dim2);font-size:10px">to</span>
+        <input type="number" class="cfg-num" id="cfg-hlmax-num" value="60" min="20" max="200" style="width:50px" oninput="document.getElementById('cfg-hl-val').textContent=document.getElementById('cfg-hlmin-num').value+' – '+this.value">
+      </div>
+    </div>
+    <div class="cfg-card">
+      <div class="cfg-label">OOS ADF ALPHA</div>
+      <div class="cfg-desc">Walk-forward out-of-sample ADF p-value threshold. Higher = more lenient validation. 0.15 is standard, 0.25 lets more marginal pairs through.</div>
+      <div class="cfg-val" id="cfg-oos-val">0.15</div>
+      <div class="cfg-input">
+        <input type="range" class="cfg-range" id="cfg-oos" min="0.01" max="0.50" step="0.01" value="0.15" oninput="document.getElementById('cfg-oos-val').textContent=(+this.value).toFixed(2);document.getElementById('cfg-oos-num').value=this.value">
+        <input type="number" class="cfg-num" id="cfg-oos-num" value="0.15" min="0.01" max="0.50" step="0.01" oninput="document.getElementById('cfg-oos').value=this.value;document.getElementById('cfg-oos-val').textContent=(+this.value).toFixed(2)">
+      </div>
+    </div>
+    <div class="cfg-card">
+      <div class="cfg-label">HALF-LIFE CV MAX</div>
+      <div class="cfg-desc">Max coefficient of variation of half-life across sub-periods. Rejects pairs where reversion speed is inconsistent. 0.50 is moderate, 1.0 is very lenient.</div>
+      <div class="cfg-val" id="cfg-hlcv-val">0.50</div>
+      <div class="cfg-input">
+        <input type="range" class="cfg-range" id="cfg-hlcv" min="0.10" max="2.00" step="0.05" value="0.50" oninput="document.getElementById('cfg-hlcv-val').textContent=(+this.value).toFixed(2);document.getElementById('cfg-hlcv-num').value=this.value">
+        <input type="number" class="cfg-num" id="cfg-hlcv-num" value="0.50" min="0.10" max="2.00" step="0.05" oninput="document.getElementById('cfg-hlcv').value=this.value;document.getElementById('cfg-hlcv-val').textContent=(+this.value).toFixed(2)">
+      </div>
+    </div>
+  </div>
+
   <div class="cfg-save">
     <button class="btn-save" onclick="saveConfig()">APPLY CHANGES</button>
     <div style="margin-top:10px;font-size:9px;color:var(--dim2)">Changes take effect on the next scan cycle. Restart the server to make them permanent.</div>
@@ -337,22 +419,45 @@ let nextPoll = Date.now() + 900000;
 let scanning = false;
 
 // ── SSE ──────────────────────────────────────────────────
-const es = new EventSource('/events');
-es.onopen  = () => document.getElementById('dot').classList.add('on');
-es.onerror = () => document.getElementById('dot').classList.remove('on');
-es.onmessage = e => {
-  const d = JSON.parse(e.data);
-  if (d.scanState && !d.positions) {
-    scanSt = d.scanState;
-    renderScanStatus(scanSt);
-    return;
+let es;
+let lastMsg = Date.now();
+
+function connectSSE() {
+  if (es) { try { es.close(); } catch(_){} }
+  es = new EventSource('/events');
+  es.onopen  = () => { document.getElementById('dot').classList.add('on'); lastMsg = Date.now(); };
+  es.onerror = () => document.getElementById('dot').classList.remove('on');
+  es.onmessage = e => {
+    lastMsg = Date.now();
+    const d = JSON.parse(e.data);
+    if (d.scanState && !d.positions) {
+      scanSt = d.scanState;
+      renderScanStatus(scanSt);
+      return;
+    }
+    state  = d;
+    scanSt = d.scanState || scanSt;
+    nextPoll = Date.now() + (d.config.pollMinutes || 15) * 60000;
+    render(d);
+    if (scanSt) renderScanStatus(scanSt);
+  };
+}
+connectSSE();
+
+// When tab becomes visible again, fetch fresh state and reconnect SSE if stale
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    // If we haven't received any message in >60s, the connection is probably dead
+    if (Date.now() - lastMsg > 60000) connectSSE();
+    // Always fetch fresh state when returning to the tab
+    fetch('/state').then(r=>r.json()).then(d => {
+      state = d; scanSt = d.scanState || scanSt;
+      nextPoll = Date.now() + (d.config.pollMinutes || 15) * 60000;
+      render(d);
+      if (scanSt) renderScanStatus(scanSt);
+    }).catch(()=>{});
   }
-  state  = d;
-  scanSt = d.scanState || scanSt;
-  nextPoll = Date.now() + (d.config.pollMinutes || 15) * 60000;
-  render(d);
-  if (scanSt) renderScanStatus(scanSt);
-};
+});
 
 // ── COUNTDOWN ────────────────────────────────────────────
 setInterval(() => {
@@ -559,18 +664,28 @@ function renderSignals(signals) {
 // ── CONFIG ─────────────────────────────────────────────────
 function loadConfig() {
   fetch('/config').then(r=>r.json()).then(c => {
-    document.getElementById('cfg-score').value    = c.autoTradeScore;
-    document.getElementById('cfg-score-num').value= c.autoTradeScore;
-    document.getElementById('cfg-score-val').textContent = c.autoTradeScore;
-    document.getElementById('cfg-vix').value      = c.vixThreshold;
-    document.getElementById('cfg-vix-num').value  = c.vixThreshold;
-    document.getElementById('cfg-vix-val').textContent   = c.vixThreshold;
-    document.getElementById('cfg-maxpos').value   = c.maxOpenPositions;
-    document.getElementById('cfg-maxpos-num').value=c.maxOpenPositions;
-    document.getElementById('cfg-maxpos-val').textContent=c.maxOpenPositions;
-    document.getElementById('cfg-maxsec').value   = c.maxPerSector;
-    document.getElementById('cfg-maxsec-num').value=c.maxPerSector;
-    document.getElementById('cfg-maxsec-val').textContent=c.maxPerSector;
+    // Trading params
+    setCfg('cfg-score', c.autoTradeScore);
+    setCfg('cfg-vix', c.vixThreshold);
+    setCfg('cfg-maxpos', c.maxOpenPositions);
+    setCfg('cfg-maxsec', c.maxPerSector);
+    // Scanner filter params
+    setCfg('cfg-hurst', c.hurstMax, v => (+v).toFixed(2));
+    setCfg('cfg-drift', c.maxBetaDrift, v => (+v).toFixed(1));
+    setCfg('cfg-zentry', c.zScoreEntry, v => (+v).toFixed(1));
+    setCfg('cfg-ir', c.minSpreadIR, v => (+v).toFixed(2));
+    setCfg('cfg-oos', c.oosAlpha, v => (+v).toFixed(2));
+    setCfg('cfg-hlcv', c.hlCvMax, v => (+v).toFixed(2));
+    // Volume (display in millions)
+    const volM = Math.round(c.minVolumeUSD / 1e6);
+    document.getElementById('cfg-vol').value = volM;
+    document.getElementById('cfg-vol-num').value = volM;
+    document.getElementById('cfg-vol-val').textContent = volM + 'M';
+    // Half-life range
+    document.getElementById('cfg-hlmin-num').value = c.halfLifeMin;
+    document.getElementById('cfg-hlmax-num').value = c.halfLifeMax;
+    document.getElementById('cfg-hl-val').textContent = c.halfLifeMin + ' \u2013 ' + c.halfLifeMax;
+    // Read-only
     document.getElementById('cfg-ro-vals').innerHTML =
       `Scan interval <b>${c.intervalMinutes} min</b> &nbsp;·&nbsp; ` +
       `Risk/trade <b>${c.riskPct}%</b> &nbsp;·&nbsp; ` +
@@ -579,6 +694,12 @@ function loadConfig() {
       `Mode <b>${c.paperMode?'PAPER':'⚠ LIVE'}</b>`;
   });
 }
+function setCfg(id, val, fmt) {
+  const display = fmt ? fmt(val) : val;
+  document.getElementById(id).value = val;
+  document.getElementById(id + '-num').value = val;
+  document.getElementById(id + '-val').textContent = display;
+}
 
 function saveConfig() {
   const body = {
@@ -586,11 +707,20 @@ function saveConfig() {
     vixThreshold:     +document.getElementById('cfg-vix-num').value,
     maxOpenPositions: +document.getElementById('cfg-maxpos-num').value,
     maxPerSector:     +document.getElementById('cfg-maxsec-num').value,
+    hurstMax:         +document.getElementById('cfg-hurst-num').value,
+    maxBetaDrift:     +document.getElementById('cfg-drift-num').value,
+    zScoreEntry:      +document.getElementById('cfg-zentry-num').value,
+    minSpreadIR:      +document.getElementById('cfg-ir-num').value,
+    minVolumeUSD:     +document.getElementById('cfg-vol-num').value * 1e6,
+    halfLifeMin:      +document.getElementById('cfg-hlmin-num').value,
+    halfLifeMax:      +document.getElementById('cfg-hlmax-num').value,
+    oosAlpha:         +document.getElementById('cfg-oos-num').value,
+    hlCvMax:          +document.getElementById('cfg-hlcv-num').value,
   };
   fetch('/config', { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) })
     .then(r=>r.json()).then(() => {
       const btn = document.querySelector('.btn-save');
-      btn.textContent = '✓ APPLIED';
+      btn.textContent = '\u2713 APPLIED';
       btn.style.borderColor = 'var(--green)';
       setTimeout(() => { btn.textContent='APPLY CHANGES'; btn.style.borderColor='var(--green)'; }, 2000);
     });
@@ -630,6 +760,16 @@ function renderStats(st, stats) {
   mb.textContent=st.config.paperMode?'PAPER':'LIVE';
   document.getElementById('bt-mode').textContent=st.config.paperMode?'PAPER':'⚠ LIVE';
   document.getElementById('bt-ts').textContent=new Date().toLocaleTimeString('de-DE');
+
+  // Risk phase badge
+  if (st.riskPhase) {
+    const pb = document.getElementById('phase-badge');
+    const colors = { AGGRESSIVE:'var(--red)', GROWTH:'var(--amber)', PROTECT:'var(--green)' };
+    pb.textContent = st.riskPhase.name;
+    pb.style.borderColor = colors[st.riskPhase.name] || 'var(--dim2)';
+    pb.style.color = colors[st.riskPhase.name] || 'var(--dim2)';
+    pb.title = `Risk: ${(st.riskPhase.maxRiskPct*100).toFixed(0)}%/trade | Max pos: ${st.riskPhase.maxPositions} | DD limit: ${(st.riskPhase.drawdownLimit*100).toFixed(0)}%`;
+  }
 }
 
 // ── FULL RENDER ───────────────────────────────────────────────
