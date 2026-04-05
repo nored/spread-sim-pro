@@ -23,6 +23,7 @@ const nodemailer = require('nodemailer');
 const db         = require('./db');
 const { scanAll, CONFIG: SCANNER_CONFIG } = require('./scanner');
 const telegram     = require('./osint/telegram');
+const { scoreSignal } = require('./scorer');
 const yahooFinance = require('yahoo-finance2').default;
 // Direct Yahoo Finance v8 API
 const https = require('https');
@@ -407,9 +408,9 @@ async function openPairPosition(sig) {
     note: `Entry cost ${sig.ticker_a}/${sig.ticker_b} (${CONFIG.costs.bidAskBps + CONFIG.costs.slippageBps}bps/leg × 2 legs)` });
 
   db.log('PAIR_OPENED',
-    `${sig.ticker_a}/${sig.ticker_b} [${sig.direction}] z=${sig.z_score} hl=${sig.half_life}d`);
+    `${sig.ticker_a}/${sig.ticker_b} [${sig.direction}] z=${sig.z_score} hl=${sig.half_life}d ML=${sig._mlGrade||'?'}(${sig._mlProb||'?'})`);
 
-  telegram.tradeOpened(sig, notional, phase.name).catch(() => {});
+  telegram.tradeOpened(sig, notional, `${phase.name} ML:${sig._mlGrade||'?'}`).catch(() => {});
   await sendAlert(
     `[PAIR OPEN] ${sig.ticker_a}/${sig.ticker_b} ${sig.direction} score=${sig.score}`,
     `Pair:       ${sig.ticker_a} / ${sig.ticker_b}
@@ -495,19 +496,37 @@ async function runScanner() {
       (yieldData.banksWarning ? ' BANKS_WARN' : '') + (yieldData.creditStress ? ' CREDIT_STRESS' : ''));
   }
 
-  const strong = signals.filter(s => s.score >= CONFIG.scanner.autoTradeScore);
+  // ML scorer: score every signal, only take those above threshold for current phase
+  const currentPhase = riskPhase();
+  const scored = signals.map(sig => {
+    const ml = scoreSignal(sig, currentPhase.name);
+    sig._mlProb  = ml.probability;
+    sig._mlGrade = ml.grade;
+    sig._mlTake  = ml.take;
+    return sig;
+  });
+
+  // Sort by ML probability (best signals first), then filter
+  scored.sort((a, b) => b._mlProb - a._mlProb);
+  const strong = scored.filter(s => s._mlTake);
+
+  // Log ML scoring summary
+  const gradeCount = { A:0, B:0, C:0, D:0 };
+  for (const s of scored) gradeCount[s._mlGrade]++;
+  db.log('ML_SCORE', `${scored.length} signals → A=${gradeCount.A} B=${gradeCount.B} C=${gradeCount.C} D=${gradeCount.D} | ${strong.length} above threshold (${currentPhase.name})`);
+
   const decisions = [];
 
   if (!regOk) {
     for (const sig of strong) {
       decisions.push({ pair: `${sig.ticker_a}/${sig.ticker_b}`, sector: sig.sector, z: sig.z_score, score: sig.score,
-        action: 'BLOCKED', reason: `regime score=${regime.score}` });
+        mlProb: sig._mlProb, action: 'BLOCKED', reason: `regime score=${regime.score}` });
     }
   }
 
   for (const sig of strong) {
     const pair = `${sig.ticker_a}/${sig.ticker_b}`;
-    if (!regOk) continue; // already logged above
+    if (!regOk) continue;
 
     // Phase 3.1: GDELT defense tension boost
     if (gdelt && gdelt.tensionIndex > 5 && sig.sector === 'DEFENSE') {
@@ -588,15 +607,17 @@ async function runScanner() {
     }
     const opened = await openPairPosition(sig);
     decisions.push({ pair, sector: sig.sector, z: sig.z_score, score: sig.score,
+      mlProb: sig._mlProb, mlGrade: sig._mlGrade,
       action: opened ? 'OPENED' : 'FAILED',
-      reason: opened ? `z=${sig.z_score} hl=${sig.half_life}d score=${sig.score}` : 'position insert failed' });
+      reason: opened ? `z=${sig.z_score} hl=${sig.half_life}d ML:${sig._mlGrade}(${sig._mlProb})` : 'position insert failed' });
   }
 
-  // Signals below autoTradeScore are monitored but not acted on
-  for (const sig of signals.filter(s => s.score < CONFIG.scanner.autoTradeScore)) {
+  // Signals below ML threshold are monitored but not acted on
+  for (const sig of scored.filter(s => !s._mlTake)) {
     decisions.push({ pair: `${sig.ticker_a}/${sig.ticker_b}`, sector: sig.sector,
-      z: sig.z_score, score: sig.score, action: 'WATCHING',
-      reason: `score ${sig.score} < ${CONFIG.scanner.autoTradeScore} threshold` });
+      z: sig.z_score, score: sig.score, mlProb: sig._mlProb,
+      action: 'WATCHING',
+      reason: `ML grade ${sig._mlGrade} (P=${sig._mlProb}) below ${currentPhase.name} threshold` });
   }
 
   scanState.lastDecisions = decisions;
