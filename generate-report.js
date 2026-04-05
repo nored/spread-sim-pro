@@ -201,13 +201,31 @@ async function run() {
           betaDriftPct: betaDrift,
         });
 
-        // Exit conditions
-        const reverted = Math.abs(rz) <= 0.5;
+        // v2 exit logic — matches server.js priority order
         const stopped = Math.abs(rz) >= Math.abs(entryData.entryRollingZ) * 1.5;
+        const earlyExit = age >= 3 && pnlPct < -3.0;
+
+        // Trailing P&L stop
+        entryData._maxPnl = Math.max(entryData._maxPnl || 0, pnlPct);
+        const trailExit = age >= 2 && entryData._maxPnl >= 1.5 && pnlPct < entryData._maxPnl * 0.4;
+
+        // Velocity stall
+        entryData._zHist = entryData._zHist || [];
+        entryData._zHist.push(rz);
+        let stallExit = false;
+        if (entryData._zHist.length >= 4 && age >= 3) {
+          const recent = entryData._zHist.slice(-4);
+          const vels = [];
+          for (let k = 1; k < recent.length; k++) vels.push(Math.abs(recent[k-1]) - Math.abs(recent[k]));
+          stallExit = vels.slice(-3).every(v => v < 0.05);
+        }
+
+        const reverted = Math.abs(rz) <= 0.5;
         const timeCut = age >= 20;
 
-        if (reverted || stopped || timeCut) {
-          const exitReason = reverted ? 'REVERT' : stopped ? 'STOP' : 'TIME_CUT';
+        const shouldExit = stopped || earlyExit || trailExit || stallExit || reverted || timeCut;
+        if (shouldExit) {
+          const exitReason = stopped ? 'STOP' : earlyExit ? 'EARLY_EXIT' : trailExit ? 'TRAIL_EXIT' : stallExit ? 'STALL_EXIT' : reverted ? 'REVERT' : 'TIME_CUT';
           const cost = notional * 4 * 20 / 10000;
 
           entryData.exitDate = testSlice[t].date;

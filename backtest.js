@@ -276,12 +276,35 @@ class Portfolio {
       const ageDays = (new Date(date) - new Date(pos.openDate)) / 86400000;
       const ageFrac = ageDays / Math.max(1, pos.halfLife);
       const dynamicSL = pos.slZ * Math.max(0.70, 1 - 0.10 * Math.max(0, ageFrac - 1));
+      const pnlPctNow = pos.notional > 0 ? (pnlUsd / pos.notional) * 100 : 0;
 
+      // Fix 2: velocity stall detection
+      pos._zHist = pos._zHist || [];
+      pos._zHist.push(zCurrent);
+      let stallExit = false;
+      if (pos._zHist.length >= 4 && ageDays >= 3) {
+        const recent = pos._zHist.slice(-4);
+        const vels = [];
+        for (let k = 1; k < recent.length; k++) vels.push(Math.abs(recent[k-1]) - Math.abs(recent[k]));
+        stallExit = vels.slice(-3).every(v => v < 0.05);
+      }
+
+      // Fix 3: trailing P&L stop
+      pos._maxPnlPct = Math.max(pos._maxPnlPct || 0, pnlPctNow);
+      let trailExit = false;
+      if (pos._maxPnlPct >= 1.5 && ageDays >= 2 && pnlPctNow < pos._maxPnlPct * 0.4) {
+        trailExit = true;
+      }
+
+      // Exit priority (v2): STOP > EARLY > TRAIL > STALL > TP > TIME_CUT
       let exitReason = null;
-      if (Math.abs(zCurrent) <= pos.tpZ)       exitReason = 'TAKE_PROFIT';
-      else if (Math.abs(zCurrent) >= dynamicSL) exitReason = 'STOP_LOSS';
-      else if (ageDays >= 10)                   exitReason = 'TIME_CUT';   // analysis: >10d = losses
-      else if (ageDays >= 3 * pos.halfLife)     exitReason = 'TIMEOUT';
+      if (Math.abs(zCurrent) >= dynamicSL)        exitReason = 'STOP_LOSS';
+      else if (ageDays >= 3 && pnlPctNow < -3.0)  exitReason = 'EARLY_EXIT';
+      else if (trailExit)                          exitReason = 'TRAIL_EXIT';
+      else if (stallExit)                          exitReason = 'STALL_EXIT';
+      else if (Math.abs(zCurrent) <= pos.tpZ)     exitReason = 'TAKE_PROFIT';
+      else if (ageDays >= 10)                      exitReason = 'TIME_CUT';
+      else if (ageDays >= 3 * pos.halfLife)        exitReason = 'TIMEOUT';
 
       if (exitReason) {
         const exitCost = pos.notional * 2 * COST_BPS / 10000;
@@ -377,8 +400,8 @@ async function run() {
   // Exclude sectors that historically lose money in pairs trading
   // Only sectors with proven backtest edge
   // Let the ML scorer decide — no static sector filter
-  const SKIP_SECTORS = new Set(['VOLATILITY']);
-  const entries = UNIVERSE.filter(e => priceMap[e.ticker] && !SKIP_SECTORS.has(e.sector));
+  const { SECTOR_WHITELIST } = require('./scanner');
+  const entries = UNIVERSE.filter(e => priceMap[e.ticker] && SECTOR_WHITELIST.has(e.sector));
   const pairs = [];
   for (let i = 0; i < entries.length - 1; i++) {
     for (let j = i + 1; j < entries.length; j++) {

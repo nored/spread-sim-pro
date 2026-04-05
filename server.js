@@ -741,14 +741,16 @@ async function updatePairPnL() {
         if (pnlPct < floor) trailExit = true;
       }
 
-      // ── EXIT PRIORITY (data-driven order) ─────────────────
-      // 1. STOP_LOSS — immediate risk control
-      // 2. TRAIL_EXIT — protect locked-in gains
-      // 3. STALL_EXIT — cut non-performers early (before TIME_CUT)
-      // 4. TAKE_PROFIT — normal successful exit
-      // 5. TIME_CUT — hard backstop (should rarely trigger now)
+      // ── EXIT PRIORITY (v2, enriched data analysis) ────────
+      // 1. STOP_LOSS — rolling z exceeds dynamic SL (immediate risk)
+      // 2. EARLY_EXIT — P&L < -3% after day 3 (94 trades, almost never recover)
+      // 3. TRAIL_EXIT — P&L below trailing floor (protect captured gains)
+      // 4. STALL_EXIT — z-velocity flat 3 readings after day 3 (cut stalled)
+      // 5. TAKE_PROFIT — rolling z reverted below TP (normal exit)
+      // 6. TIME_CUT — hard backstop (should rarely fire after fixes 2-4)
       let exitReason = null;
       if (Math.abs(zCurrent) >= dynamicSL)                     exitReason = 'STOP_LOSS';
+      else if (ageDays >= 3 && pnlPct < -3.0)                 exitReason = 'EARLY_EXIT';
       else if (trailExit)                                      exitReason = 'TRAIL_EXIT';
       else if (stallExit)                                      exitReason = 'STALL_EXIT';
       else if (Math.abs(zCurrent) <= pos.tp_z)                 exitReason = 'TAKE_PROFIT';
