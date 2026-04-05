@@ -666,26 +666,28 @@ async function updatePairPnL() {
         }
       }
 
-      const ouStd = pos.ou_sigma / Math.sqrt(252 * 2 * pos.ou_kappa);
       const currentSpread = (Math.log(spotA) + Math.log(fxA)) - beta * (Math.log(spotB) + Math.log(fxB));
 
-      // Phase 1.4: use rolling spread mean instead of frozen ou_theta when enough data
-      const rollingMean = db.getRecentSpreadMean(pos.id);
-      const equilibrium = rollingMean !== null ? rollingMean : pos.ou_theta;
-      const zCurrent = ouStd > 1e-8
-        ? (currentSpread - equilibrium) / ouStd
-        : 0;
+      // ── FIX 1: Rolling z-score instead of OU z ────────────
+      // Gap analysis: rolling z = 97.8% WR, OU z = 28% WR.
+      // OU theta/sigma drift from reality. Rolling z adapts in real-time.
+      const pnlHistory = db.getPairPnlHistory(pos.id);
+      const spreadHistory = pnlHistory.map(r => {
+        const sa = r.spot_a, sb = r.spot_b;
+        return (Math.log(sa) + Math.log(fxA)) - beta * (Math.log(sb) + Math.log(fxB));
+      });
+      spreadHistory.push(currentSpread);
+      const zWindow = spreadHistory.slice(-20);
+      const zMean = zWindow.reduce((a,b) => a+b, 0) / zWindow.length;
+      const zStd = Math.sqrt(zWindow.reduce((a,b) => a+(b-zMean)**2, 0) / zWindow.length);
+      const rollingZ = zStd > 1e-10 ? (currentSpread - zMean) / zStd : 0;
 
-      // Phase 3.4: earnings proximity warning for open positions
-      try {
-        const [qA, qB] = await Promise.all([
-          yfQuoteWithEarnings(pos.ticker_a).catch(() => null),
-          yfQuoteWithEarnings(pos.ticker_b).catch(() => null),
-        ]);
-        if (isEarningsNear(qA?.earningsTs, 2) || isEarningsNear(qB?.earningsTs, 2)) {
-          db.log('EARNINGS_EXIT_WARN', `${pos.ticker_a}/${pos.ticker_b}: earnings within 2d`);
-        }
-      } catch { /* non-critical */ }
+      // Keep OU z for logging/diagnostics only
+      const ouStd = pos.ou_sigma / Math.sqrt(252 * 2 * pos.ou_kappa);
+      const ouZ = ouStd > 1e-8 ? (currentSpread - pos.ou_theta) / ouStd : 0;
+
+      // All exit decisions use rollingZ
+      const zCurrent = rollingZ;
 
       // P&L in USD, then convert to EUR
       const longA    = pos.direction === 'LONG_A_SHORT_B';
@@ -711,11 +713,45 @@ async function updatePairPnL() {
       const ageFraction  = ageDays / Math.max(1, pos.half_life);
       const dynamicSL    = pos.sl_z * Math.max(0.70, 1 - 0.10 * Math.max(0, ageFraction - 1));
 
-      // Analysis proved: >10 day holds have 35% win rate and -1.5% avg.
-      // Hard exit at maxHoldDays regardless of z-score.
+      // ── FIX 2: Velocity-based stall detection ─────────────
+      // TIME_CUT trades show z-velocity -0.011/day (stalled).
+      // REVERT trades show +0.333/day (actively reverting).
+      // Detect stall early → exit before losses compound.
+      const recentZ = pnlHistory.slice(-4).map(r => r.z_current);
+      recentZ.push(+zCurrent.toFixed(4));
+      let stallExit = false;
+      if (recentZ.length >= 4 && ageDays >= 3) {
+        const velocities = [];
+        for (let i = 1; i < recentZ.length; i++) {
+          velocities.push(Math.abs(recentZ[i-1]) - Math.abs(recentZ[i]));
+        }
+        // All recent readings show z NOT moving toward zero
+        stallExit = velocities.slice(-3).every(v => v < 0.05);
+      }
+
+      // ── FIX 3: Trailing P&L stop ─────────────────────────
+      // 259 trades peaked above +1% then ended negative.
+      // Once profitable, protect gains with a trailing floor.
+      const allPnlPcts = pnlHistory.map(r => r.pnl_pct);
+      allPnlPcts.push(pnlPct);
+      const maxPnlPct = Math.max(0, ...allPnlPcts);
+      let trailExit = false;
+      if (maxPnlPct >= 1.5 && ageDays >= 2) {
+        const floor = maxPnlPct * 0.4;  // keep at least 40% of peak
+        if (pnlPct < floor) trailExit = true;
+      }
+
+      // ── EXIT PRIORITY (data-driven order) ─────────────────
+      // 1. STOP_LOSS — immediate risk control
+      // 2. TRAIL_EXIT — protect locked-in gains
+      // 3. STALL_EXIT — cut non-performers early (before TIME_CUT)
+      // 4. TAKE_PROFIT — normal successful exit
+      // 5. TIME_CUT — hard backstop (should rarely trigger now)
       let exitReason = null;
-      if (Math.abs(zCurrent) <= pos.tp_z)                      exitReason = 'TAKE_PROFIT';
-      else if (Math.abs(zCurrent) >= dynamicSL)                exitReason = 'STOP_LOSS';
+      if (Math.abs(zCurrent) >= dynamicSL)                     exitReason = 'STOP_LOSS';
+      else if (trailExit)                                      exitReason = 'TRAIL_EXIT';
+      else if (stallExit)                                      exitReason = 'STALL_EXIT';
+      else if (Math.abs(zCurrent) <= pos.tp_z)                 exitReason = 'TAKE_PROFIT';
       else if (ageDays >= CONFIG.scanner.maxHoldDays)          exitReason = 'TIME_CUT';
       else if (ageDays >= 3 * pos.half_life)                   exitReason = 'TIMEOUT';
 
