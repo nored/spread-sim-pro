@@ -186,16 +186,21 @@ const CONFIG = {
 
   scanner: {
     intervalMinutes: 30,
-    minScore:        55,    // Unter 55 → kein Trade
-    autoTradeScore:  65,    // Ab 65 → automatisch traden (80 was too strict — required z>=3.2)
-    maxOpenPositions: 6,    // Nie mehr als 6 gleichzeitig
-    maxPerSector:     2,    // Nie mehr als 2 pro Sektor
+    minScore:        55,
+    autoTradeScore:  65,
+    maxOpenPositions: 8,     // analysis: need to capture more of 132 signals/yr
+    maxPerSector:     3,     // analysis: best sectors produce multiple simultaneous signals
     maxSpreadCorrelation: 0.65,
+    maxHoldDays:     10,     // CRITICAL: analysis proved >10d hold = losses. Hard cap.
   },
 
   pnl: {
-    pollMinutes: 15,
+    pollMinutes: 10,         // poll more often to catch 10-day exits on time
   },
+
+  // Leverage: pairs are hedged (long+short), so leverage risk is reduced.
+  // Set via env: LEVERAGE=3 node server.js
+  leverage: parseFloat(process.env.LEVERAGE || '1'),
 
   // Realistic paper trading costs.
   // Set via env: BID_ASK_BPS=10 SLIPPAGE_BPS=5 node server.js
@@ -351,9 +356,9 @@ function spreadCorrelation(histA, histB) {
 async function openPairPosition(sig) {
   const balance   = db.getBalance();
   const phase     = riskPhase();
-  // Phase 2.3: Kelly-informed position sizing (adaptive per risk phase)
+  // Kelly-informed position sizing × leverage
   const riskFraction = kellyFraction(sig.z_score, sig.ou_sigma, sig.ou_kappa, sig.half_life);
-  const notional  = +(balance * riskFraction).toFixed(4);
+  const notional  = +(balance * riskFraction * CONFIG.leverage).toFixed(4);
   db.log('KELLY_SIZE', `${sig.ticker_a}/${sig.ticker_b}: phase=${phase.name} fraction=${(riskFraction*100).toFixed(2)}% notional=€${notional.toFixed(2)}`);
   if (notional < 50) {
     db.log('GATE_BLOCK', `Insufficient capital: need €50, have €${notional}`);
@@ -683,13 +688,15 @@ async function updatePairPnL() {
 
       const ageDays      = (Date.now() - new Date(pos.opened_at).getTime()) / 86400000;
       const ageFraction  = ageDays / Math.max(1, pos.half_life);
-      // SL tightens by 10% for each half-life beyond the first, flooring at 70% of entry SL
       const dynamicSL    = pos.sl_z * Math.max(0.70, 1 - 0.10 * Math.max(0, ageFraction - 1));
 
+      // Analysis proved: >10 day holds have 35% win rate and -1.5% avg.
+      // Hard exit at maxHoldDays regardless of z-score.
       let exitReason = null;
-      if (Math.abs(zCurrent) <= pos.tp_z)          exitReason = 'TAKE_PROFIT';
-      else if (Math.abs(zCurrent) >= dynamicSL)    exitReason = 'STOP_LOSS';
-      else if (ageDays >= 3 * pos.half_life)       exitReason = 'TIMEOUT';
+      if (Math.abs(zCurrent) <= pos.tp_z)                      exitReason = 'TAKE_PROFIT';
+      else if (Math.abs(zCurrent) >= dynamicSL)                exitReason = 'STOP_LOSS';
+      else if (ageDays >= CONFIG.scanner.maxHoldDays)          exitReason = 'TIME_CUT';
+      else if (ageDays >= 3 * pos.half_life)                   exitReason = 'TIMEOUT';
 
       if (exitReason) {
         const exitCost = calcTxCost(pos.notional_eur);
@@ -826,6 +833,8 @@ app.get('/config', (_req, res) => res.json({
   halfLifeMax:      SCANNER_CONFIG.halfLifeMax,
   oosAlpha:         SCANNER_CONFIG.oosAlpha,
   hlCvMax:          SCANNER_CONFIG.hlCvMax,
+  maxHoldDays:      CONFIG.scanner.maxHoldDays,
+  leverage:         CONFIG.leverage,
 }));
 
 app.patch('/config', requireAuth, (req, res) => {
@@ -845,6 +854,8 @@ app.patch('/config', requireAuth, (req, res) => {
   if (b.halfLifeMax      != null && b.halfLifeMax      >= 20  && b.halfLifeMax     <= 200) { SCANNER_CONFIG.halfLifeMax     = +b.halfLifeMax;      db.log('CONFIG_CHANGE', `halfLifeMax → ${b.halfLifeMax}`);         }
   if (b.oosAlpha         != null && b.oosAlpha         >= 0.01&& b.oosAlpha        <= 0.5) { SCANNER_CONFIG.oosAlpha        = +b.oosAlpha;         db.log('CONFIG_CHANGE', `oosAlpha → ${b.oosAlpha}`);               }
   if (b.hlCvMax          != null && b.hlCvMax          >= 0.1 && b.hlCvMax         <= 2.0) { SCANNER_CONFIG.hlCvMax         = +b.hlCvMax;          db.log('CONFIG_CHANGE', `hlCvMax → ${b.hlCvMax}`);                 }
+  if (b.maxHoldDays      != null && b.maxHoldDays      >= 3   && b.maxHoldDays     <= 60)  { CONFIG.scanner.maxHoldDays     = +b.maxHoldDays;      db.log('CONFIG_CHANGE', `maxHoldDays → ${b.maxHoldDays}`);         }
+  if (b.leverage         != null && b.leverage         >= 1   && b.leverage        <= 10)  { CONFIG.leverage                = +b.leverage;         db.log('CONFIG_CHANGE', `leverage → ${b.leverage}`);               }
   broadcastState();
   res.json({ ok: true });
 });

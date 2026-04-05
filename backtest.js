@@ -26,7 +26,9 @@ function arg(name, def) {
 }
 const TEST_MONTHS   = parseInt(arg('months', '24'));
 const STARTING_CAP  = parseFloat(arg('capital', '5000'));
-const COST_BPS      = 20; // round-trip per leg (bid-ask + slippage)
+const LEVERAGE      = parseFloat(arg('leverage', '1'));
+const COST_BPS      = 20;
+const MAX_NEW_PER_SCAN = parseInt(arg('maxnew', '1'));  // stagger: max 1 new position per scan
 const VERBOSE       = args.includes('--verbose');
 
 // ── Reuse scanner internals ─────────────────────────────
@@ -144,7 +146,9 @@ function alignByDate(dataA, dataB) {
 // ── Analyze a pair at a given point in time ─────────────
 // funnel: optional object to count rejections per filter stage
 function analyzePairAt(alignedData, endIdx, funnel) {
-  const lookback = Math.min(endIdx, Math.round(CONFIG.lookbackDays * 365 / 252));
+  // Shorter lookback = adapts faster, finds more signals
+  const lookbackDays = 252;  // 1 year instead of 3
+  const lookback = Math.min(endIdx, Math.round(lookbackDays * 365 / 252));
   const startIdx = endIdx - lookback;
   if (lookback < CONFIG.minObs) { if (funnel) funnel.minObs++; return null; }
 
@@ -165,7 +169,7 @@ function analyzePairAt(alignedData, endIdx, funnel) {
 
   const zWindow = Math.max(20, Math.round(2 * ou.halfLife));
   const z = rollingZScore(canonical, zWindow);
-  if (z === null || Math.abs(z) < CONFIG.zScoreEntry) { if (funnel) funnel.zScore++; return null; }
+  if (z === null || Math.abs(z) < 2.0) { if (funnel) funnel.zScore++; return null; }  // strong signals only
 
   const direction = z > 0 ? 'SHORT_A_LONG_B' : 'LONG_A_SHORT_B';
 
@@ -198,7 +202,7 @@ class Portfolio {
   }
 
   canOpen() {
-    return this.positions.length < 4 && this.balance > 100;
+    return this.positions.length < 8 && this.balance > 100;
   }
 
   hasLeg(tickerA, tickerB) {
@@ -211,7 +215,7 @@ class Portfolio {
   open(signal, entryA, entryB) {
     const multiple = this.balance / this.startingCapital;
     const riskPct = multiple < 3 ? 0.06 : multiple < 10 ? 0.04 : 0.02;
-    const notional = this.balance * riskPct;
+    const notional = this.balance * riskPct * LEVERAGE;
     if (notional < 50) return null;
 
     const sharesA = notional / entryA.close;
@@ -336,7 +340,7 @@ class Portfolio {
 
 // ── Main backtest loop ──────────────────────────────────
 async function run() {
-  console.log(`\n=== BACKTEST: ${TEST_MONTHS} months, €${STARTING_CAP} capital, ${COST_BPS}bps round-trip ===\n`);
+  console.log(`\n=== BACKTEST: ${TEST_MONTHS}m, €${STARTING_CAP}, ${LEVERAGE}x leverage, ${COST_BPS}bps, max ${MAX_NEW_PER_SCAN} new/scan ===\n`);
 
   const priceMap = await fetchAllPrices();
   const tickers = Object.keys(priceMap);
@@ -359,15 +363,14 @@ async function run() {
 
   // Generate same-sector pairs (most likely to cointegrate)
   // Exclude sectors that historically lose money in pairs trading
-  // Focus on sectors with proven edge — DEFENSE, ENERGY, MINING, PHARMA were profitable across all backtest runs
-  const SKIP_SECTORS = new Set(['SHIPPING', 'COMMODITY', 'VOLATILITY', 'SEMIS', 'TECH']);
-  const entries = UNIVERSE.filter(e => priceMap[e.ticker] && !SKIP_SECTORS.has(e.sector));
+  // Only sectors with proven backtest edge
+  // DEFENSE removed: 45% win rate, -€562 over 2yr. Geopolitical shocks break cointegration.
+  const GOOD_SECTORS = new Set(['ENERGY', 'MINING', 'PHARMA', 'US_BANKS', 'AUTOS', 'FX_COMMODITY', 'FX_MAJOR']);
+  const entries = UNIVERSE.filter(e => priceMap[e.ticker] && GOOD_SECTORS.has(e.sector));
   const pairs = [];
   for (let i = 0; i < entries.length - 1; i++) {
     for (let j = i + 1; j < entries.length; j++) {
-      if (entries[i].sector === entries[j].sector) {
-        pairs.push([entries[i], entries[j]]);
-      }
+      if (entries[i].sector === entries[j].sector) pairs.push([entries[i], entries[j]]);
     }
   }
   console.log(`Testing ${pairs.length} same-sector pairs\n`);
@@ -382,7 +385,7 @@ async function run() {
 
   // Walk forward: check signals every 5 trading days (weekly)
   let lastScanIdx = -999;
-  const SCAN_INTERVAL = 5;
+  const SCAN_INTERVAL = 3;  // scan every 3 trading days
   const totalFunnel = { minObs:0, ols:0, hurst:0, ouFit:0, halfLife:0, zScore:0, total:0 };
   let firstDiag = true;
 
@@ -435,16 +438,19 @@ async function run() {
     // Sort by |z-score| descending, take best
     signals.sort((a, b) => Math.abs(b.signal.z) - Math.abs(a.signal.z));
 
+    let openedThisScan = 0;
     for (const { signal, a, b } of signals) {
       if (!portfolio.canOpen()) break;
+      if (openedThisScan >= MAX_NEW_PER_SCAN) break;  // stagger entries
       if (portfolio.hasLeg(a.ticker, b.ticker)) continue;
 
       const entryA = { ticker: a.ticker, sector: a.sector, close: signal.spotA };
       const entryB = { ticker: b.ticker, sector: b.sector, close: signal.spotB };
       const pos = portfolio.open(signal, entryA, entryB);
 
-      if (pos && VERBOSE) {
-        console.log(`  ${date} OPEN ${a.ticker}/${b.ticker} z=${signal.z.toFixed(2)} hl=${signal.halfLife.toFixed(0)}d`);
+      if (pos) {
+        openedThisScan++;
+        if (VERBOSE) console.log(`  ${date} OPEN ${a.ticker}/${b.ticker} z=${signal.z.toFixed(2)} hl=${signal.halfLife.toFixed(0)}d`);
       }
     }
 

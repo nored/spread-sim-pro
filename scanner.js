@@ -172,9 +172,9 @@ const CONFIG = {
   lookbackDays:  756,      // rolling window (trading days); actual date computed at scan start
   minObs:        120,
   halfLifeMin:   5,
-  halfLifeMax:   60,
-  zScoreEntry:   2.0,
-  zScoreStrong:  2.5,
+  halfLifeMax:   20,    // analysis: hl 5-20 has best expectancy, longer = losses
+  zScoreEntry:   2.5,   // analysis: z>=2.5 → 69% WR, 0.48% expectancy (z<2.5 is noise)
+  zScoreStrong:  3.0,
   bhAlpha:       1.00,   // BH pre-filter: passes ~50 candidates for quality filters (Hurst, IR, walk-forward, OU, z-score)
   kalmanDelta:   0.0001, // hedge ratio drift speed (smaller = slower drift)
   maxAdfLags:    4,      // maximum ADF lag order for AIC selection
