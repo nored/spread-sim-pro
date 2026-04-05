@@ -22,6 +22,7 @@ const path       = require('path');
 const nodemailer = require('nodemailer');
 const db         = require('./db');
 const { scanAll, CONFIG: SCANNER_CONFIG } = require('./scanner');
+const telegram     = require('./osint/telegram');
 const yahooFinance = require('yahoo-finance2').default;
 // Direct Yahoo Finance v8 API
 const https = require('https');
@@ -403,6 +404,7 @@ async function openPairPosition(sig) {
   db.log('PAIR_OPENED',
     `${sig.ticker_a}/${sig.ticker_b} [${sig.direction}] z=${sig.z_score} hl=${sig.half_life}d`);
 
+  telegram.tradeOpened(sig, notional, phase.name).catch(() => {});
   await sendAlert(
     `[PAIR OPEN] ${sig.ticker_a}/${sig.ticker_b} ${sig.direction} score=${sig.score}`,
     `Pair:       ${sig.ticker_a} / ${sig.ticker_b}
@@ -459,25 +461,34 @@ async function runScanner() {
     return [];
   }
 
-  // Phase 2.5: multi-factor regime filter (replaces flat VIX threshold)
-  const regime = await require('./osint/fred').getRegimeScore()
+  // VIX regime filter (uses FRED if key set, otherwise falls back to scanner's Yahoo VIX)
+  const regime = await require('./osint/fred').getRegimeScore(vix)
     .catch(() => ({ score: 0, blocked: false, vix: null, vix3m: null, hyOas: null }));
   const regOk  = !regime.blocked;
   if (!regOk) {
     db.log('REGIME_BLOCK', `score=${regime.score} vix=${regime.vix} hy=${regime.hyOas}`);
   }
 
-  // Phase 3 OSINT: fetch once before signal loop
-  const gdelt  = await require('./osint/gdelt').getDefenseTensionIndex()
-    .catch(() => null);
-  const eia    = await require('./osint/eia').getCrudeInventoryChange()
-    .catch(() => null);
-  const awards = await require('./osint/usaspending').getRecentLargeAwards()
-    .catch(() => null);
+  // OSINT: fetch all data sources in parallel before signal loop
+  const [gdelt, eia, awards, cotData, yieldData] = await Promise.all([
+    require('./osint/gdelt').getDefenseTensionIndex().catch(() => null),
+    require('./osint/eia').getCrudeInventoryChange().catch(() => null),
+    require('./osint/usaspending').getRecentLargeAwards().catch(() => null),
+    require('./osint/cot').getCotPositioning().catch(() => null),
+    require('./osint/yields').getYieldRegime().catch(() => null),
+  ]);
 
   if (gdelt) db.log('GDELT_DATA', `tensionIndex=${gdelt.tensionIndex} articleCount=${gdelt.articleCount}`);
   if (eia)   db.log('EIA_DATA', `change=${eia.changeMMBbl}MMBbl latest=${eia.latestMMBbl} period=${eia.period}`);
   if (awards) db.log('USASPENDING_DATA', `winners=[${awards.winners.join(',')}] since=${awards.cutoffDate}`);
+  if (cotData) {
+    const cotSummary = Object.entries(cotData).map(([s,d]) => `${s}:${d.direction}${d.crowded?'!':''}(${d.netPct}%)`).join(' ');
+    db.log('COT_DATA', cotSummary);
+  }
+  if (yieldData) {
+    db.log('YIELD_DATA', `10Y-2Y=${yieldData.spread10y2y} HY=${yieldData.hySpread} score=${yieldData.score}` +
+      (yieldData.banksWarning ? ' BANKS_WARN' : '') + (yieldData.creditStress ? ' CREDIT_STRESS' : ''));
+  }
 
   const strong = signals.filter(s => s.score >= CONFIG.scanner.autoTradeScore);
   const decisions = [];
@@ -518,6 +529,38 @@ async function runScanner() {
       continue;
     }
 
+    // COT positioning: warn on crowded speculative positions in related futures
+    if (cotData && cotData[sig.sector]?.crowded) {
+      const cot = cotData[sig.sector];
+      sig.score = Math.max(50, sig.score - 10);
+      db.log('COT_CROWDED', `${pair}: ${sig.sector} net speculative ${cot.netPct}% (${cot.direction}) → score=${sig.score}`);
+    }
+
+    // Yield curve regime: block bank/FX pairs when curve is inverted or credit is stressed
+    if (yieldData) {
+      if (yieldData.banksWarning && (sig.sector === 'BANKS' || sig.sector === 'US_BANKS')) {
+        decisions.push({ pair, sector: sig.sector, z: sig.z_score, score: sig.score,
+          action: 'BLOCKED', reason: `yield curve flat/inverted (10Y-2Y=${yieldData.spread10y2y}) — bank spreads unreliable` });
+        db.log('YIELD_BLOCK', `${pair}: 10Y-2Y=${yieldData.spread10y2y} — banks blocked`);
+        continue;
+      }
+      if (yieldData.creditStress) {
+        sig.score = Math.max(50, sig.score - 8);
+        db.log('CREDIT_WARN', `${pair}: HY spread ${yieldData.hySpread}bps → score=${sig.score}`);
+      }
+    }
+
+    // Short interest: block pairs where one leg has extreme short crowding
+    try {
+      const si = await require('./osint/shortinterest').checkPairShortInterest(sig.ticker_a, sig.ticker_b);
+      if (si?.blocked) {
+        decisions.push({ pair, sector: sig.sector, z: sig.z_score, score: sig.score,
+          action: 'BLOCKED', reason: `short interest crowded: ${si.reason}` });
+        db.log('SI_BLOCK', `${pair}: ${si.reason}`);
+        continue;
+      }
+    } catch { /* non-critical — SI data often unavailable */ }
+
     // Earnings proximity filter (5-day window around earnings dates)
     try {
       const [qA, qB] = await Promise.all([
@@ -553,6 +596,9 @@ async function runScanner() {
 
   scanState.lastDecisions = decisions;
   scanState.lastVix = regime.vix ? +regime.vix.toFixed(1) : (vix ? +vix.toFixed(1) : null);
+
+  // Telegram scan summary (only sends if there are signals or opened trades)
+  telegram.scanSummary(signals.length, decisions, riskPhase().name, scanState.lastVix).catch(() => {});
 
   scanState = { ...scanState, running: false, phase: 'complete',
     completedAt: new Date().toISOString(),
@@ -652,6 +698,7 @@ async function updatePairPnL() {
         db.closePairPosition(pos.id, exitReason, pnlEur);
         db.log('PAIR_CLOSED',
           `${pos.ticker_a}/${pos.ticker_b} [${exitReason}] ${pnlPct >= 0 ? '+' : ''}${pnlPct}%`);
+        telegram.tradeClosed(pos, exitReason, pnlEur, pnlPct).catch(() => {});
         await sendAlert(
           `[${exitReason}] ${pos.ticker_a}/${pos.ticker_b} ${pnlPct >= 0 ? '+' : ''}${pnlPct}%`,
           `EXIT: ${exitReason}
@@ -837,17 +884,21 @@ app.post('/capital/withdraw', requireAuth, (req, res) => {
 // ── START ────────────────────────────────────────────────
 app.listen(CONFIG.port, async () => {
   const osintActive = [
-    process.env.FRED_API_KEY ? 'FRED' : null,
+    'VIX',        // Yahoo Finance (always on)
+    'Yields',     // Yahoo Finance: treasury yields + HYG/LQD credit
     'GDELT',
-    process.env.EIA_API_KEY  ? 'EIA'  : null,
     'USASpend',
+    'ShortInt',   // Yahoo Finance: short % of float
+    'COT*',       // CFTC.gov: may fail if Cloudflare blocks
+    process.env.FRED_API_KEY ? 'FRED(enhanced)' : null,
+    process.env.EIA_API_KEY  ? 'EIA'            : null,
   ].filter(Boolean).join(', ');
   const osintOff = [
-    process.env.FRED_API_KEY ? null : 'FRED',
     process.env.EIA_API_KEY  ? null : 'EIA',
   ].filter(Boolean);
   const osintLine = `ON: ${osintActive}` + (osintOff.length ? `  OFF: ${osintOff.join(',')}` : '');
   const emailStatus = CONFIG.email.from ? `ON (${CONFIG.email.from})` : 'OFF (set SMTP_FROM + SMTP_PASSWORD)';
+  const tgStatus = telegram.isConfigured() ? 'ON' : 'OFF (set TELEGRAM_KEY + TELEGRAM_CHAT_ID)';
 
   console.log(`
 ╔═══════════════════════════════════════════════╗
@@ -856,6 +907,7 @@ app.listen(CONFIG.port, async () => {
 ║  ${(CONFIG.paperMode ? 'Mode: PAPER (safe)' : 'Mode: LIVE – REAL MONEY').padEnd(44)}║
 ║  OSINT: ${osintLine.padEnd(38)}║
 ║  Email: ${emailStatus.padEnd(38)}║
+║  TG: ${tgStatus.padEnd(41)}║
 ╚═══════════════════════════════════════════════╝
 
   CAPITAL=50000 node server.js        → custom capital
@@ -885,4 +937,17 @@ app.listen(CONFIG.port, async () => {
     const h = new Date().getUTCHours();
     if (h >= 7 && h <= 17 && !scanState.running) await runScanner();
   }, CONFIG.scanner.intervalMinutes * 60 * 1000);
+
+  // Telegram daily summary — sends at 18:00 UTC (after market close)
+  setInterval(() => {
+    const h = new Date().getUTCHours();
+    const m = new Date().getUTCMinutes();
+    if (h === 18 && m < 15 && telegram.isConfigured()) {
+      const pairPositions = db.getOpenPairPositions().map(p => {
+        const hist = db.getPairPnlHistory(p.id);
+        return { ...p, latest: hist[hist.length - 1] || null };
+      });
+      telegram.dailySummary(db.getStats(), pairPositions, riskPhase().name).catch(() => {});
+    }
+  }, 15 * 60 * 1000);
 });
