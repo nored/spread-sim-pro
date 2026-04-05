@@ -163,6 +163,28 @@ Rule: exit if |z| velocity < 0.05 for 3 consecutive days
   SYNTHESIS — WHAT NEEDS TO CHANGE
 ======================================================================
 
+ADDITIONAL FINDINGS FROM PARALLEL ANALYSIS:
+
+TIME_CUT ANATOMY (322 trades):
+  50.3% (162/322) had a missed positive exit window
+  Peak P&L typically at DAY 3 (avg +1.5%), then deteriorates to -10.6%
+  80% of profit peaks occur in days 1-5
+  Only 13.4% ever saw full Z reversion to zero
+  DEFENSE (25%) and ENERGY (23%) make up half of TIME_CUT trades
+
+R² SWEET SPOT:
+  R² 0.50-0.70: 68% WR, +0.451% expectancy (ONLY positive bucket)
+  R² < 0.30: 57% WR, -0.30% (garbage — 617 trades admitted with no relationship)
+  R² >= 0.70: 54% WR, -0.57% (overfit, tiny spreads eaten by costs)
+  NO OLS R² THRESHOLD EXISTS IN CURRENT CODE (admits R²=0.0002)
+  Adding R²>=0.50 cuts 71% of trades, improves WR 57%→61%
+
+LIVE SYSTEM vs BACKTEST DIVERGENCE:
+  server.js exits on OU z-score (proven 28% WR)
+  backtest.js exits on rolling z-score (proven 97.8% WR)
+  These are DIFFERENT SYSTEMS — live is fundamentally broken
+  Multiple filters effectively disabled (bhAlpha=1.0, hurstMax=1.0)
+
 ROOT CAUSES OF LOSS (in priority order):
 
 1. FROZEN HEDGE RATIO
