@@ -2,7 +2,7 @@
 // ═══════════════════════════════════════════════════════
 //  backtest.js — Walk-forward backtest for spread signals
 //
-//  Usage:  node backtest.js [--months 24] [--capital 5000]
+//  Usage:  node backtest.js [--months 24] [--capital 5000] [--leverage 3]
 //
 //  Fetches 3 years of daily prices (1yr lookback + 2yr test),
 //  then walks forward week by week:
@@ -15,6 +15,7 @@
 // ═══════════════════════════════════════════════════════
 
 const { UNIVERSE, CONFIG, FETCH_DELAY_MS } = require('./scanner');
+const { scoreSignal } = require('./scorer');
 const YahooFinance = require('yahoo-finance2').default;
 const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey', 'ripHistorical'] });
 
@@ -146,8 +147,7 @@ function alignByDate(dataA, dataB) {
 // ── Analyze a pair at a given point in time ─────────────
 // funnel: optional object to count rejections per filter stage
 function analyzePairAt(alignedData, endIdx, funnel) {
-  // Shorter lookback = adapts faster, finds more signals
-  const lookbackDays = 252;  // 1 year instead of 3
+  const lookbackDays = 252;
   const lookback = Math.min(endIdx, Math.round(lookbackDays * 365 / 252));
   const startIdx = endIdx - lookback;
   if (lookback < CONFIG.minObs) { if (funnel) funnel.minObs++; return null; }
@@ -169,22 +169,27 @@ function analyzePairAt(alignedData, endIdx, funnel) {
 
   const zWindow = Math.max(20, Math.round(2 * ou.halfLife));
   const z = rollingZScore(canonical, zWindow);
-  if (z === null || Math.abs(z) < 2.0) { if (funnel) funnel.zScore++; return null; }  // strong signals only
+  // Use scanner's z-score entry (currently 2.5 from analysis)
+  if (z === null || Math.abs(z) < CONFIG.zScoreEntry) { if (funnel) funnel.zScore++; return null; }
 
   const direction = z > 0 ? 'SHORT_A_LONG_B' : 'LONG_A_SHORT_B';
 
+  // Seed rolling z with last 20 spread values so exit z works from day 1
+  const recentSpreads = canonical.slice(-20);
+
   return {
     hedgeRatio: fit.beta,
-    z,
-    halfLife: ou.halfLife,
-    theta: ou.theta,
-    sigma: ou.sigma,
-    kappa: ou.kappa,
-    hurst,
-    direction,
+    z_score: z, z,
+    half_life: ou.halfLife, halfLife: ou.halfLife,
+    ou_theta: ou.theta, theta: ou.theta,
+    ou_sigma: ou.sigma, sigma: ou.sigma,
+    ou_kappa: ou.kappa, kappa: ou.kappa,
+    ou_r2: fit.r2, hedge_ratio: fit.beta,
+    hurst, direction,
     spotA: slice[slice.length - 1].a,
     spotB: slice[slice.length - 1].b,
     date: slice[slice.length - 1].date,
+    _recentSpreads: recentSpreads,
   };
 }
 
@@ -231,6 +236,7 @@ class Portfolio {
       openDate: signal.date,
       spotAEntry: entryA.close, spotBEntry: entryB.close,
       hedgeRatio: signal.hedgeRatio,
+      _spreadHist: signal._recentSpreads || [],  // seed with pre-open spread history
       sharesA, sharesB, notional,
       zEntry: signal.z,
       halfLife: signal.halfLife,
@@ -254,8 +260,13 @@ class Portfolio {
       const spotA = prA.close;
       const spotB = prB.close;
       const currentSpread = Math.log(spotA) - pos.hedgeRatio * Math.log(spotB);
-      const ouStd = pos.sigma / Math.sqrt(252 * 2 * pos.kappa);
-      const zCurrent = ouStd > 1e-8 ? (currentSpread - pos.theta) / ouStd : 0;
+
+      // Rolling z-score (gap analysis: rolling z = 97.8% WR, OU z = 28% WR)
+      pos._spreadHist.push(currentSpread);
+      const window = pos._spreadHist.slice(-20);
+      const wMean = window.reduce((a,b)=>a+b,0) / window.length;
+      const wStd = Math.sqrt(window.reduce((a,b)=>a+(b-wMean)**2,0) / window.length);
+      const zCurrent = wStd > 1e-10 ? (currentSpread - wMean) / wStd : 0;
 
       const longA = pos.direction === 'LONG_A_SHORT_B';
       const pnlA = pos.sharesA * (spotA - pos.spotAEntry) * (longA ? 1 : -1);
@@ -269,6 +280,7 @@ class Portfolio {
       let exitReason = null;
       if (Math.abs(zCurrent) <= pos.tpZ)       exitReason = 'TAKE_PROFIT';
       else if (Math.abs(zCurrent) >= dynamicSL) exitReason = 'STOP_LOSS';
+      else if (ageDays >= 10)                   exitReason = 'TIME_CUT';   // analysis: >10d = losses
       else if (ageDays >= 3 * pos.halfLife)     exitReason = 'TIMEOUT';
 
       if (exitReason) {
@@ -364,9 +376,9 @@ async function run() {
   // Generate same-sector pairs (most likely to cointegrate)
   // Exclude sectors that historically lose money in pairs trading
   // Only sectors with proven backtest edge
-  // DEFENSE removed: 45% win rate, -€562 over 2yr. Geopolitical shocks break cointegration.
-  const GOOD_SECTORS = new Set(['ENERGY', 'MINING', 'PHARMA', 'US_BANKS', 'AUTOS', 'FX_COMMODITY', 'FX_MAJOR']);
-  const entries = UNIVERSE.filter(e => priceMap[e.ticker] && GOOD_SECTORS.has(e.sector));
+  // Let the ML scorer decide — no static sector filter
+  const SKIP_SECTORS = new Set(['VOLATILITY']);
+  const entries = UNIVERSE.filter(e => priceMap[e.ticker] && !SKIP_SECTORS.has(e.sector));
   const pairs = [];
   for (let i = 0; i < entries.length - 1; i++) {
     for (let j = i + 1; j < entries.length; j++) {
@@ -420,7 +432,14 @@ async function run() {
 
       signal.tickerA = a.ticker;
       signal.tickerB = b.ticker;
-      signal.sectorA = a.sector;
+      signal.sector = a.sector;
+
+      // ML scorer: only take signals above threshold
+      const mult = portfolio.balance / portfolio.startingCapital;
+      const ml = scoreSignal(signal, mult < 3 ? 'AGGRESSIVE' : mult < 10 ? 'GROWTH' : 'PROTECT');
+      if (!ml.take) { if (scanFunnel) scanFunnel.mlReject = (scanFunnel.mlReject||0) + 1; continue; }
+      signal._mlScore = ml.score;
+      signal._mlGrade = ml.grade;
       signals.push({ signal, a, b });
     }
 
@@ -435,8 +454,8 @@ async function run() {
     for (const k of Object.keys(scanFunnel)) totalFunnel[k] = (totalFunnel[k]||0) + scanFunnel[k];
     totalFunnel.total += signals.length;
 
-    // Sort by |z-score| descending, take best
-    signals.sort((a, b) => Math.abs(b.signal.z) - Math.abs(a.signal.z));
+    // Sort by ML score descending (best signals first)
+    signals.sort((a, b) => (b.signal._mlScore || 0) - (a.signal._mlScore || 0));
 
     let openedThisScan = 0;
     for (const { signal, a, b } of signals) {
