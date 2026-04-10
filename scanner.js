@@ -152,21 +152,11 @@ const UNIVERSE = [
   { ticker: 'JPYUSD=X', name: 'JPY/USD',           sector: 'FX_MAJOR'   },
 ];
 
-// ── FIX 4: Sector whitelist (data-driven) ───────────────
-// 24-month backtest: DEFENSE/ENERGY/TECH/SEMIS/COMMODITY = -EUR 7,950 total.
-// These sectors have regime-driven breaks that poison cointegration.
-// Keep only sectors with positive expectancy across all test periods.
-const SECTOR_WHITELIST = new Set([
-  'SHIPPING',       // +1.29% avg expectancy, 68% WR
-  'AUTOS',          // +0.69%, 66% WR
-  'PHARMA',         // +0.66%, 71% WR (highest WR)
-  'INFRA',          // +0.38%, 64% WR
-  'MINING',         // +0.33%, 62% WR
-  'US_BANKS',       // +0.32%, 69% WR
-  'FX_COMMODITY',   // +0.06%, 69% WR
-  'BANKS',          // near zero but positive after trailing stop fix
-  'FX_MAJOR',       // near zero but useful for diversification
-]);
+// All sectors active. The signal works in every sector (97.8% z-reversion).
+// Sector filtering was masking the real problem: hedge ratio drift.
+const SECTOR_WHITELIST = new Set(
+  [...new Set(UNIVERSE.map(e => e.sector))]
+);
 
 // ── Rate Limit Configuration ────────────────────────────
 // Yahoo Finance unofficial cap: ~60 req/min.
