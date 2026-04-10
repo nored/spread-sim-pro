@@ -274,37 +274,36 @@ class Portfolio {
       const pnlUsd = pnlA + pnlB;
 
       const ageDays = (new Date(date) - new Date(pos.openDate)) / 86400000;
-      const ageFrac = ageDays / Math.max(1, pos.halfLife);
-      const dynamicSL = pos.slZ * Math.max(0.70, 1 - 0.10 * Math.max(0, ageFrac - 1));
       const pnlPctNow = pos.notional > 0 ? (pnlUsd / pos.notional) * 100 : 0;
 
-      // Fix 2: velocity stall detection
-      pos._zHist = pos._zHist || [];
-      pos._zHist.push(zCurrent);
-      let stallExit = false;
-      if (pos._zHist.length >= 4 && ageDays >= 3) {
-        const recent = pos._zHist.slice(-4);
-        const vels = [];
-        for (let k = 1; k < recent.length; k++) vels.push(Math.abs(recent[k-1]) - Math.abs(recent[k]));
-        stallExit = vels.slice(-3).every(v => v < 0.05);
-      }
+      // Dynamic sliding window exit — one unified function
+      const ageFrac = ageDays / Math.max(1, pos.halfLife);
+      const absZ = Math.abs(zCurrent);
+      const absEntryZ = Math.abs(pos.zEntry);
+      const expectedZ = absEntryZ * Math.exp(-(pos.kappa || 0.05) * ageDays);
 
-      // Fix 3: trailing P&L stop
-      pos._maxPnlPct = Math.max(pos._maxPnlPct || 0, pnlPctNow);
-      let trailExit = false;
-      if (pos._maxPnlPct >= 1.5 && ageDays >= 2 && pnlPctNow < pos._maxPnlPct * 0.4) {
-        trailExit = true;
-      }
+      if (pos._maxPnlPct === undefined) pos._maxPnlPct = -Infinity;
+      if (pos._peakAgeFrac === undefined) pos._peakAgeFrac = 0;
+      if (pnlPctNow >= pos._maxPnlPct) { pos._maxPnlPct = pnlPctNow; pos._peakAgeFrac = ageFrac; }
 
-      // Exit priority (v2): STOP > EARLY > TRAIL > STALL > TP > TIME_CUT
       let exitReason = null;
-      if (Math.abs(zCurrent) >= dynamicSL)        exitReason = 'STOP_LOSS';
-      else if (ageDays >= 3 && pnlPctNow < -3.0)  exitReason = 'EARLY_EXIT';
-      else if (trailExit)                          exitReason = 'TRAIL_EXIT';
-      else if (stallExit)                          exitReason = 'STALL_EXIT';
-      else if (Math.abs(zCurrent) <= pos.tpZ)     exitReason = 'TAKE_PROFIT';
-      else if (ageDays >= 10)                      exitReason = 'TIME_CUT';
-      else if (ageDays >= 3 * pos.halfLife)        exitReason = 'TIMEOUT';
+      // 1. REVERT
+      if (absZ < 0.5) exitReason = 'REVERT';
+      // 2. DIVERGE
+      if (!exitReason) {
+        const slMult = 1.5 - 0.5 * Math.min(ageFrac, 1.0);
+        if (absZ > absEntryZ * slMult) exitReason = 'DIVERGE';
+      }
+      // 3. TRAIL
+      if (!exitReason && pos._maxPnlPct > 1.0 && ageDays >= 1) {
+        const ageSincePeak = ageFrac - pos._peakAgeFrac;
+        const floorPct = Math.max(0.5, 0.8 - 0.3 * Math.min(ageSincePeak, 1.0));
+        if (pnlPctNow < pos._maxPnlPct * floorPct) exitReason = 'TRAIL';
+      }
+      // 4. STALL
+      if (!exitReason && ageFrac > 0.5 && absZ > expectedZ * 1.2) exitReason = 'STALL';
+      // 5. OVERTIME
+      if (!exitReason && ageDays > Math.min(2.0 * pos.halfLife, 20)) exitReason = 'OVERTIME';
 
       if (exitReason) {
         const exitCost = pos.notional * 2 * COST_BPS / 10000;

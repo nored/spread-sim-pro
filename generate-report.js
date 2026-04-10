@@ -201,31 +201,28 @@ async function run() {
           betaDriftPct: betaDrift,
         });
 
-        // v2 exit logic — matches server.js priority order
-        const stopped = Math.abs(rz) >= Math.abs(entryData.entryRollingZ) * 1.5;
-        const earlyExit = age >= 3 && pnlPct < -3.0;
+        // Dynamic sliding window exit — unified, parameterized by trade's own dynamics
+        const absZ = Math.abs(rz);
+        const absEntryZ = Math.abs(entryData.entryRollingZ);
+        const ageFrac = age / Math.max(1, ou.halfLife);
+        const expectedZ = absEntryZ * Math.exp(-ou.kappa * age);
 
-        // Trailing P&L stop
-        entryData._maxPnl = Math.max(entryData._maxPnl || 0, pnlPct);
-        const trailExit = age >= 2 && entryData._maxPnl >= 1.5 && pnlPct < entryData._maxPnl * 0.4;
+        if (entryData._maxPnlPct === undefined) entryData._maxPnlPct = -Infinity;
+        if (entryData._peakAgeFrac === undefined) entryData._peakAgeFrac = 0;
+        if (pnlPct >= entryData._maxPnlPct) { entryData._maxPnlPct = pnlPct; entryData._peakAgeFrac = ageFrac; }
 
-        // Velocity stall
-        entryData._zHist = entryData._zHist || [];
-        entryData._zHist.push(rz);
-        let stallExit = false;
-        if (entryData._zHist.length >= 4 && age >= 3) {
-          const recent = entryData._zHist.slice(-4);
-          const vels = [];
-          for (let k = 1; k < recent.length; k++) vels.push(Math.abs(recent[k-1]) - Math.abs(recent[k]));
-          stallExit = vels.slice(-3).every(v => v < 0.05);
+        let exitReason = null;
+        if (absZ < 0.5) exitReason = 'REVERT';
+        if (!exitReason) { const sl = 1.5 - 0.5 * Math.min(ageFrac, 1.0); if (absZ > absEntryZ * sl) exitReason = 'DIVERGE'; }
+        if (!exitReason && entryData._maxPnlPct > 1.0 && age >= 1) {
+          const asp = ageFrac - entryData._peakAgeFrac;
+          const fp = Math.max(0.5, 0.8 - 0.3 * Math.min(asp, 1.0));
+          if (pnlPct < entryData._maxPnlPct * fp) exitReason = 'TRAIL';
         }
+        if (!exitReason && ageFrac > 0.5 && absZ > expectedZ * 1.2) exitReason = 'STALL';
+        if (!exitReason && age > Math.min(2.0 * ou.halfLife, 20)) exitReason = 'OVERTIME';
 
-        const reverted = Math.abs(rz) <= 0.5;
-        const timeCut = age >= 20;
-
-        const shouldExit = stopped || earlyExit || trailExit || stallExit || reverted || timeCut;
-        if (shouldExit) {
-          const exitReason = stopped ? 'STOP' : earlyExit ? 'EARLY_EXIT' : trailExit ? 'TRAIL_EXIT' : stallExit ? 'STALL_EXIT' : reverted ? 'REVERT' : 'TIME_CUT';
+        if (exitReason) {
           const cost = notional * 4 * 20 / 10000;
 
           entryData.exitDate = testSlice[t].date;

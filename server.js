@@ -636,6 +636,55 @@ async function runScanner() {
 
 // (Options updatePnL removed in v5.2 — options infrastructure deprecated)
 
+// ── DYNAMIC SLIDING WINDOW EXIT ──────────────────────────
+// One unified exit function. Parameterized by the trade's own kappa,
+// halfLife, and entryZ. No fixed day counts. No fixed P&L thresholds.
+// The trade carries its own clock (ageFrac) and expected reversion curve.
+function dynamicExit(pos, zRolling, pnlPct, ageDays) {
+  const ageFrac = ageDays / Math.max(1, pos.half_life);
+  const absZ = Math.abs(zRolling);
+  const absEntryZ = Math.abs(pos.z_entry);
+  const expectedZ = absEntryZ * Math.exp(-(pos.ou_kappa || 0.05) * ageDays);
+
+  // Track peaks (persist across poll intervals via pos object)
+  if (pos._maxProgress === undefined) pos._maxProgress = 0;
+  if (pos._maxPnlPct === undefined) pos._maxPnlPct = -Infinity;
+  if (pos._peakAgeFrac === undefined) pos._peakAgeFrac = 0;
+  const progress = absEntryZ > 0 ? 1.0 - (absZ / absEntryZ) : 0;
+  pos._maxProgress = Math.max(pos._maxProgress, progress);
+  if (pnlPct >= pos._maxPnlPct) {
+    pos._maxPnlPct = pnlPct;
+    pos._peakAgeFrac = ageFrac;
+  }
+
+  // 1. REVERT: z has come home
+  if (absZ < 0.5) return 'REVERT';
+
+  // 2. DIVERGE: z moving away, dynamic SL tightens with age
+  //    ageFrac=0: SL = 1.5× entry z. ageFrac=1: SL = 1.0× entry z.
+  const slMult = 1.5 - 0.5 * Math.min(ageFrac, 1.0);
+  if (absZ > absEntryZ * slMult) return 'DIVERGE';
+
+  // 3. TRAIL: protect gains, floor tightens with age
+  //    Floor starts at 80% of peak, decays to 50% over one ageFrac unit.
+  if (pos._maxPnlPct > 1.0 && ageDays >= 1) {
+    const ageSincePeak = ageFrac - pos._peakAgeFrac;
+    const floorPct = Math.max(0.5, 0.8 - 0.3 * Math.min(ageSincePeak, 1.0));
+    const floor = pos._maxPnlPct * floorPct;
+    if (pnlPct < floor) return 'TRAIL';
+  }
+
+  // 4. STALL: behind the OU curve after meaningful time
+  //    After ageFrac > 0.5, if actual z is > 120% of expected z, underperforming.
+  if (ageFrac > 0.5 && absZ > expectedZ * 1.2) return 'STALL';
+
+  // 5. OVERTIME: dynamic hold limit = 2× halfLife, capped at 20 days
+  const maxHold = Math.min(2.0 * pos.half_life, 20);
+  if (ageDays > maxHold) return 'OVERTIME';
+
+  return null; // hold
+}
+
 // ── PAIR P&L UPDATER ─────────────────────────────────────
 // v5.2: FX-adjusted P&L, Kalman beta preference, rolling spread mean for z-score
 async function updatePairPnL() {
@@ -709,53 +758,11 @@ async function updatePairPnL() {
         fx_ok:       (fxFailed.has(curA) || fxFailed.has(curB)) ? 0 : 1,
       });
 
-      const ageDays      = (Date.now() - new Date(pos.opened_at).getTime()) / 86400000;
-      const ageFraction  = ageDays / Math.max(1, pos.half_life);
-      const dynamicSL    = pos.sl_z * Math.max(0.70, 1 - 0.10 * Math.max(0, ageFraction - 1));
-
-      // ── FIX 2: Velocity-based stall detection ─────────────
-      // TIME_CUT trades show z-velocity -0.011/day (stalled).
-      // REVERT trades show +0.333/day (actively reverting).
-      // Detect stall early → exit before losses compound.
-      const recentZ = pnlHistory.slice(-4).map(r => r.z_current);
-      recentZ.push(+zCurrent.toFixed(4));
-      let stallExit = false;
-      if (recentZ.length >= 4 && ageDays >= 3) {
-        const velocities = [];
-        for (let i = 1; i < recentZ.length; i++) {
-          velocities.push(Math.abs(recentZ[i-1]) - Math.abs(recentZ[i]));
-        }
-        // All recent readings show z NOT moving toward zero
-        stallExit = velocities.slice(-3).every(v => v < 0.05);
-      }
-
-      // ── FIX 3: Trailing P&L stop ─────────────────────────
-      // 259 trades peaked above +1% then ended negative.
-      // Once profitable, protect gains with a trailing floor.
-      const allPnlPcts = pnlHistory.map(r => r.pnl_pct);
-      allPnlPcts.push(pnlPct);
-      const maxPnlPct = Math.max(0, ...allPnlPcts);
-      let trailExit = false;
-      if (maxPnlPct >= 1.5 && ageDays >= 2) {
-        const floor = maxPnlPct * 0.4;  // keep at least 40% of peak
-        if (pnlPct < floor) trailExit = true;
-      }
-
-      // ── EXIT PRIORITY (v2, enriched data analysis) ────────
-      // 1. STOP_LOSS — rolling z exceeds dynamic SL (immediate risk)
-      // 2. EARLY_EXIT — P&L < -3% after day 3 (94 trades, almost never recover)
-      // 3. TRAIL_EXIT — P&L below trailing floor (protect captured gains)
-      // 4. STALL_EXIT — z-velocity flat 3 readings after day 3 (cut stalled)
-      // 5. TAKE_PROFIT — rolling z reverted below TP (normal exit)
-      // 6. TIME_CUT — hard backstop (should rarely fire after fixes 2-4)
-      let exitReason = null;
-      if (Math.abs(zCurrent) >= dynamicSL)                     exitReason = 'STOP_LOSS';
-      else if (ageDays >= 3 && pnlPct < -3.0)                 exitReason = 'EARLY_EXIT';
-      else if (trailExit)                                      exitReason = 'TRAIL_EXIT';
-      else if (stallExit)                                      exitReason = 'STALL_EXIT';
-      else if (Math.abs(zCurrent) <= pos.tp_z)                 exitReason = 'TAKE_PROFIT';
-      else if (ageDays >= CONFIG.scanner.maxHoldDays)          exitReason = 'TIME_CUT';
-      else if (ageDays >= 3 * pos.half_life)                   exitReason = 'TIMEOUT';
+      // ── DYNAMIC SLIDING WINDOW EXIT ────────────────────────
+      // One unified function. Everything parameterized by the trade's
+      // own kappa, halfLife, and entryZ. No fixed day counts.
+      const ageDays = (Date.now() - new Date(pos.opened_at).getTime()) / 86400000;
+      const exitReason = dynamicExit(pos, zCurrent, pnlPct, ageDays);
 
       if (exitReason) {
         const exitCost = calcTxCost(pos.notional_eur);
