@@ -91,6 +91,8 @@ async function run() {
   console.log(`Test: ${testDates[0]} → ${testDates[testDates.length-1]} (${testDates.length} days)\n`);
 
   // For every pair: compute the spread, find every z > 2 entry, track if it reverts
+  const allTrades = [];
+  let entryData = null;
   let totalOpportunities = 0;
   let totalWins = 0;
   let totalProfitPct = 0;
@@ -138,6 +140,13 @@ async function run() {
         entryZ = z;
         entrySpread = spread;
         entryIdx = t;
+        // Also compute actual dollar P&L at entry for comparison
+        entryData = {
+          tickerA: entryA.ticker, tickerB: entryB.ticker, sector: entryA.sector,
+          entryDate: testSlice[t].date, entryPriceA: testSlice[t].a, entryPriceB: testSlice[t].b,
+          beta: fit.beta, halfLife: ou.halfLife, kappa: ou.kappa, sigma: ou.sigma, ouR2: ou.r2,
+          entryZ: z, entrySpread: spread,
+        };
       } else if (inTrade) {
         const age = t - entryIdx;
         const reverted = Math.abs(z) <= 0.5;
@@ -146,22 +155,53 @@ async function run() {
 
         if (reverted || stopped || timeout) {
           totalOpportunities++;
-          // P&L: approximate as the z-score movement × spread std
+          // Z-score P&L (what potential measures)
           const pnlZ = Math.abs(entryZ) - Math.abs(z);
-          const pnlPct = pnlZ * ouStd / Math.abs(entrySpread) * 100;
-          const win = pnlPct > 0;
+          const pnlPctZ = pnlZ * ouStd / Math.abs(entrySpread) * 100;
 
-          if (win) { totalWins++; totalProfitPct += pnlPct; }
-          else { totalLossPct += Math.abs(pnlPct); }
+          // Actual dollar P&L on fixed shares (what backtest measures)
+          const notional = 1000;
+          const longA = entryZ < 0;
+          const sharesA = notional / entryData.entryPriceA;
+          const sharesB = sharesA * fit.beta * entryData.entryPriceA / entryData.entryPriceB;
+          const dollarPnlA = sharesA * (testSlice[t].a - entryData.entryPriceA) * (longA ? 1 : -1);
+          const dollarPnlB = sharesB * (testSlice[t].b - entryData.entryPriceB) * (longA ? -1 : 1);
+          const dollarPnl = dollarPnlA + dollarPnlB;
+          const dollarPnlPct = (dollarPnl / notional) * 100;
+          const cost = notional * 4 * 20 / 10000;
 
-          if (pnlPct > bestTrade.pct) bestTrade = { pct: pnlPct, pair: `${entryA.ticker}/${entryB.ticker}`, z: entryZ, age };
-          if (pnlPct < worstTrade.pct) worstTrade = { pct: pnlPct, pair: `${entryA.ticker}/${entryB.ticker}`, z: entryZ, age };
+          const exitReason = reverted ? 'REVERT' : stopped ? 'STOP' : 'TIMEOUT';
+          const win = pnlPctZ > 0;
+
+          if (win) { totalWins++; totalProfitPct += pnlPctZ; }
+          else { totalLossPct += Math.abs(pnlPctZ); }
+
+          if (pnlPctZ > bestTrade.pct) bestTrade = { pct: pnlPctZ, pair: `${entryA.ticker}/${entryB.ticker}`, z: entryZ, age };
+          if (pnlPctZ < worstTrade.pct) worstTrade = { pct: pnlPctZ, pair: `${entryA.ticker}/${entryB.ticker}`, z: entryZ, age };
 
           const sector = entryA.sector;
           if (!sectorStats[sector]) sectorStats[sector] = { trades: 0, wins: 0, totalPct: 0 };
           sectorStats[sector].trades++;
           if (win) sectorStats[sector].wins++;
-          sectorStats[sector].totalPct += pnlPct;
+          sectorStats[sector].totalPct += pnlPctZ;
+
+          // Save per-trade data
+          allTrades.push({
+            tickerA: entryData.tickerA, tickerB: entryData.tickerB, sector: entryData.sector,
+            entryDate: entryData.entryDate, exitDate: testSlice[t].date,
+            entryPriceA: +entryData.entryPriceA.toFixed(4), entryPriceB: +entryData.entryPriceB.toFixed(4),
+            exitPriceA: +testSlice[t].a.toFixed(4), exitPriceB: +testSlice[t].b.toFixed(4),
+            beta: +fit.beta.toFixed(6), halfLife: +ou.halfLife.toFixed(2),
+            kappa: +ou.kappa.toFixed(6), sigma: +ou.sigma.toFixed(6), ouR2: +(ou.r2 || 0).toFixed(4),
+            entryZ: +entryZ.toFixed(4), exitZ: +z.toFixed(4), holdDays: age,
+            exitReason,
+            zPnlPct: +pnlPctZ.toFixed(3),
+            dollarPnlPct: +dollarPnlPct.toFixed(3),
+            dollarPnlAfterCost: +(dollarPnl - cost).toFixed(2),
+            zWin: pnlPctZ > 0 ? 1 : 0,
+            dollarWin: dollarPnl - cost > 0 ? 1 : 0,
+            gap: +(pnlPctZ - dollarPnlPct).toFixed(3),
+          });
 
           inTrade = false;
         }
@@ -206,6 +246,31 @@ async function run() {
   }
 
   console.log('═══════════════════════════════════════════\n');
+
+  // Save per-trade CSV with both z-score P&L and dollar P&L
+  const fs = require('fs');
+  const csvHeader = 'tickerA,tickerB,sector,entryDate,exitDate,entryPriceA,entryPriceB,exitPriceA,exitPriceB,beta,halfLife,kappa,sigma,ouR2,entryZ,exitZ,holdDays,exitReason,zPnlPct,dollarPnlPct,dollarPnlAfterCost,zWin,dollarWin,gap';
+  const csvRows = allTrades.map(t => [
+    t.tickerA,t.tickerB,t.sector,t.entryDate,t.exitDate,
+    t.entryPriceA,t.entryPriceB,t.exitPriceA,t.exitPriceB,
+    t.beta,t.halfLife,t.kappa,t.sigma,t.ouR2,
+    t.entryZ,t.exitZ,t.holdDays,t.exitReason,
+    t.zPnlPct,t.dollarPnlPct,t.dollarPnlAfterCost,
+    t.zWin,t.dollarWin,t.gap
+  ].join(','));
+  fs.writeFileSync('potential-trades.csv', csvHeader + '\n' + csvRows.join('\n'));
+
+  // Summary comparison
+  const zWins = allTrades.filter(t => t.zWin).length;
+  const dollarWins = allTrades.filter(t => t.dollarWin).length;
+  const bothWin = allTrades.filter(t => t.zWin && t.dollarWin).length;
+  const zWinDollarLose = allTrades.filter(t => t.zWin && !t.dollarWin).length;
+  console.log(`Saved potential-trades.csv: ${allTrades.length} trades`);
+  console.log(`  Z-score wins: ${zWins} (${(zWins/allTrades.length*100).toFixed(1)}%)`);
+  console.log(`  Dollar wins:  ${dollarWins} (${(dollarWins/allTrades.length*100).toFixed(1)}%)`);
+  console.log(`  Z win + dollar win:  ${bothWin}`);
+  console.log(`  Z win + dollar LOSE: ${zWinDollarLose} ← THE GAP`);
+  console.log(`  Avg gap (zPnl - dollarPnl): ${(allTrades.reduce((a,t)=>a+t.gap,0)/allTrades.length).toFixed(3)}%`);
 }
 
 run().catch(e => { console.error(e); process.exit(1); });
