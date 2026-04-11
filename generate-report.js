@@ -218,26 +218,58 @@ async function run() {
           betaDriftPct: betaDrift,
         });
 
-        // Dynamic sliding window exit — unified, parameterized by trade's own dynamics
-        const absZ = Math.abs(rz);
-        const absEntryZ = Math.abs(entryData.entryRollingZ);
-        const ageFrac = age / Math.max(1, ou.halfLife);
-        const expectedZ = absEntryZ * Math.exp(-ou.kappa * age);
+        // Optimal stopping exit (Bertram 2010 / Zeng-Lee 2014)
+        // Matches server.js computeOptimalLevels + exit logic exactly
+        if (!entryData._opt) {
+          const kappa = ou.kappa || 0.05;
+          const sigma = ou.sigma || 0.10;
+          const scale = sigma / Math.sqrt(2 * kappa);
+          const c_d = scale > 1e-10 ? 0.0080 / scale : 0.5;
+          // Solve optimal threshold (Newton's method on ouExpectedTime derivative)
+          let a = 1.0;
+          for (let iter = 0; iter < 50; iter++) {
+            const s2a = Math.SQRT2 * a;
+            let sum = 0, powTerm = s2a, fact = 1;
+            for (let k = 0; k <= 25; k++) {
+              const exp = 2*k+1;
+              if (k > 0) { powTerm *= s2a*s2a; fact *= exp*(exp-1); }
+              let gam = Math.sqrt(Math.PI);
+              if (k > 0) { let n=1,d=1; for(let i=1;i<=2*k;i++)n*=i; for(let i=1;i<=k;i++)d*=i; gam=(n/(Math.pow(4,k)*d))*Math.sqrt(Math.PI); }
+              const term = gam * powTerm / fact;
+              if (!isFinite(term) || Math.abs(term) < 1e-15) break;
+              sum += term;
+            }
+            const ET = sum;
+            const profit = a * scale - 0.0080;
+            const rate = ET > 1e-10 ? profit / ET : -1;
+            const dProfit = scale;
+            const dET = Math.exp(-a*a) * Math.sqrt(Math.PI);
+            const dRate = ET > 1e-10 ? (dProfit * ET - profit * dET) / (ET * ET) : 0;
+            if (Math.abs(dRate) < 1e-12) break;
+            a = a - rate / dRate;
+            if (a < 0.1) a = 0.1;
+            if (a > 10) a = 10;
+          }
+          const exitOffset = a * scale;
+          const entryDist = Math.abs(entryData.entryRollingZ || 2) * (ou.sigma || 0.10) / Math.sqrt(252 * 2 * (ou.kappa || 0.05));
+          const stopOffset = Math.max(exitOffset * 2.5, entryDist * 1.5);
+          entryData._opt = { exitOffset, stopOffset };
+        }
 
-        if (entryData._maxPnlPct === undefined) entryData._maxPnlPct = -Infinity;
-        if (entryData._peakAgeFrac === undefined) entryData._peakAgeFrac = 0;
-        if (pnlPct >= entryData._maxPnlPct) { entryData._maxPnlPct = pnlPct; entryData._peakAgeFrac = ageFrac; }
+        // Rolling spread mean as live theta
+        const spreadWindow = spreads.slice(Math.max(0, t - 19), t + 1);
+        const liveTheta = spreadWindow.reduce((a,b) => a+b, 0) / spreadWindow.length;
+        const spreadDev = spreads[t] - liveTheta;
 
         let exitReason = null;
-        if (absZ < 0.5) exitReason = 'REVERT';
-        if (!exitReason) { const sl = 1.5 - 0.5 * Math.min(ageFrac, 1.0); if (absZ > absEntryZ * sl) exitReason = 'DIVERGE'; }
-        if (!exitReason && entryData._maxPnlPct > 1.0 && age >= 1) {
-          const asp = ageFrac - entryData._peakAgeFrac;
-          const fp = Math.max(0.5, 0.8 - 0.3 * Math.min(asp, 1.0));
-          if (pnlPct < entryData._maxPnlPct * fp) exitReason = 'TRAIL';
+        if (entryData.direction === 'LONG_A_SHORT_B') {
+          if (spreadDev >= entryData._opt.exitOffset) exitReason = 'REVERT';
+          else if (spreadDev <= -entryData._opt.stopOffset) exitReason = 'DIVERGE';
+        } else {
+          if (spreadDev <= -entryData._opt.exitOffset) exitReason = 'REVERT';
+          else if (spreadDev >= entryData._opt.stopOffset) exitReason = 'DIVERGE';
         }
-        if (!exitReason && ageFrac > 0.5 && absZ > expectedZ * 1.2) exitReason = 'STALL';
-        if (!exitReason && age > Math.min(2.0 * ou.halfLife, 20)) exitReason = 'OVERTIME';
+        if (!exitReason && age > Math.min(3 * (ou.halfLife || 10), 30)) exitReason = 'OVERTIME';
 
         if (exitReason) {
           const cost = notional * 4 * 20 / 10000;
