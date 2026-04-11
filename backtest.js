@@ -207,7 +207,7 @@ class Portfolio {
   }
 
   canOpen() {
-    return this.positions.length < 8 && this.balance > 100;
+    return this.positions.length < 4 && this.balance > 100;
   }
 
   hasLeg(tickerA, tickerB) {
@@ -269,38 +269,9 @@ class Portfolio {
       const zCurrent = wStd > 1e-10 ? (currentSpread - wMean) / wStd : 0;
 
       const longA = pos.direction === 'LONG_A_SHORT_B';
-
-      // Live hedge rebalancing
-      if (!pos._rebal) {
-        pos._rebal = { shares_b: pos.sharesB, last_b_price: pos.spotBEntry, realized_b: 0, rebal_cost: 0 };
-      }
-      // Simple Kalman: use rolling OLS on last 20 spread points for live beta
-      const recentN = Math.min(pos._spreadHist.length, 20);
-      let liveBeta = pos.hedgeRatio;
-      if (recentN >= 5) {
-        const rA = [], rB = [];
-        for (let k = pos._spreadHist.length - recentN; k < pos._spreadHist.length; k++) {
-          // Reconstruct from spread: can't easily, so use price history
-        }
-        // Fallback: use entry beta + damped adjustment based on spread drift
-        // This approximates Kalman without full price history in backtest
-        const spreadDrift = currentSpread - (pos._spreadHist[0] || currentSpread);
-        liveBeta = pos.hedgeRatio * (1 + spreadDrift * 0.1);
-        if (liveBeta <= 0) liveBeta = pos.hedgeRatio;
-      }
-
-      const desiredB = +(pos.sharesA * liveBeta * spotA / spotB).toFixed(6);
-      if (pos._rebal.shares_b > 0 && Math.abs(desiredB - pos._rebal.shares_b) / pos._rebal.shares_b > 0.05) {
-        const bPnl = pos._rebal.shares_b * (spotB - pos._rebal.last_b_price) * (longA ? -1 : 1);
-        pos._rebal.realized_b += bPnl;
-        pos._rebal.rebal_cost += Math.abs(desiredB - pos._rebal.shares_b) * spotB * 0.0020;
-        pos._rebal.shares_b = desiredB;
-        pos._rebal.last_b_price = spotB;
-      }
-
       const pnlA = pos.sharesA * (spotA - pos.spotAEntry) * (longA ? 1 : -1);
-      const pnlB_unreal = pos._rebal.shares_b * (spotB - pos._rebal.last_b_price) * (longA ? -1 : 1);
-      const pnlUsd = pnlA + pos._rebal.realized_b + pnlB_unreal - pos._rebal.rebal_cost;
+      const pnlB = pos.sharesB * (spotB - pos.spotBEntry) * (longA ? -1 : 1);
+      const pnlUsd = pnlA + pnlB;
 
       const ageDays = (new Date(date) - new Date(pos.openDate)) / 86400000;
       const pnlPctNow = pos.notional > 0 ? (pnlUsd / pos.notional) * 100 : 0;
@@ -494,24 +465,75 @@ async function run() {
       signals.push({ signal, a, b });
     }
 
-    // Diagnostic: show filter funnel on first scan
+    // ── Mahalanobis: compute z-scores for ALL same-sector pairs at this time step ──
+    const sectorZMap = {};
+    for (const { a, b, aligned } of alignedPairs) {
+      let endIdx = -1;
+      for (let k = aligned.length - 1; k >= 0; k--) {
+        if (aligned[k].date <= date) { endIdx = k + 1; break; }
+      }
+      if (endIdx < CONFIG.minObs) continue;
+      const lookbackN = Math.min(endIdx, Math.round(252 * 365 / 252));
+      const slice = aligned.slice(endIdx - lookbackN, endIdx);
+      if (slice.length < CONFIG.minObs) continue;
+      const lA = slice.map(d => Math.log(d.a)), lB = slice.map(d => Math.log(d.b));
+      const f = ols(lA, lB);
+      if (!f || f.beta <= 0) continue;
+      const can = lA.map((la, i) => la - f.beta * lB[i]);
+      const o = ouFit(can);
+      if (!o) continue;
+      const zW = Math.max(20, Math.round(2 * o.halfLife));
+      const zVal = rollingZScore(can, zW);
+      if (zVal === null) continue;
+      const sec = a.sector;
+      if (!sectorZMap[sec]) sectorZMap[sec] = [];
+      sectorZMap[sec].push({ absZ: Math.abs(zVal) });
+    }
+
+    // ── Compute Mahalanobis score for each signal ──
+    for (const { signal } of signals) {
+      const sp = sectorZMap[signal.sector];
+      if (!sp || sp.length <= 1) { signal._sectorContext = 'ISOLATED'; continue; }
+      const absZs = sp.map(p => p.absZ);
+      const n = absZs.length;
+      const mean = absZs.reduce((a, b) => a + b, 0) / n;
+      const std = Math.sqrt(absZs.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
+      const elevFrac = absZs.filter(z => z > 1.5).length / n;
+      const sigFrac = absZs.filter(z => z >= CONFIG.zScoreEntry).length / n;
+      if (std < 0.01) { signal._sectorContext = 'REGIME_SHIFT'; continue; }
+      const rawM = (Math.abs(signal.z_score || signal.z) - mean) / std;
+      const adj = Math.max(0, 1.0 - elevFrac * 2);
+      signal._mahal = rawM * adj;
+      if (elevFrac > 0.6) signal._sectorContext = 'REGIME_SHIFT';
+      else if (sigFrac > 0.4) signal._sectorContext = 'SECTOR_MOVE';
+      else if (rawM > 1.5) signal._sectorContext = 'ANOMALOUS';
+      else signal._sectorContext = 'WEAK_ANOMALY';
+    }
+
+    // ── Filter: block regime shifts, penalize sector moves ──
+    const filtered = signals.filter(({ signal }) => {
+      if (signal._sectorContext === 'REGIME_SHIFT') return false;
+      return true;
+    });
+
+    // Diagnostic
     if (firstDiag) {
       firstDiag = false;
       const tested = Object.values(scanFunnel).reduce((a,b)=>a+b,0) + signals.length;
+      const blocked = signals.length - filtered.length;
       console.log(`\nDiagnostic scan on ${date}: ${tested} pairs tested`);
-      console.log(`  Filter funnel: ${Object.entries(scanFunnel).filter(([,v])=>v>0).map(([k,v])=>k+'='+v).join(' ')} → ${signals.length} signals\n`);
+      console.log(`  Filter funnel: ${Object.entries(scanFunnel).filter(([,v])=>v>0).map(([k,v])=>k+'='+v).join(' ')} → ${signals.length} signals → ${blocked} REGIME blocked → ${filtered.length} tradeable\n`);
     }
-    // Accumulate
     for (const k of Object.keys(scanFunnel)) totalFunnel[k] = (totalFunnel[k]||0) + scanFunnel[k];
-    totalFunnel.total += signals.length;
+    totalFunnel.total += filtered.length;
 
     // Sort by ML score descending (best signals first)
-    signals.sort((a, b) => (b.signal._mlScore || 0) - (a.signal._mlScore || 0));
+    filtered.sort((a, b) => (b.signal._mlScore || 0) - (a.signal._mlScore || 0));
 
     let openedThisScan = 0;
-    for (const { signal, a, b } of signals) {
+    for (const { signal, a, b } of filtered) {
       if (!portfolio.canOpen()) break;
-      if (openedThisScan >= MAX_NEW_PER_SCAN) break;  // stagger entries
+      if (openedThisScan >= MAX_NEW_PER_SCAN) break;
       if (portfolio.hasLeg(a.ticker, b.ticker)) continue;
 
       const entryA = { ticker: a.ticker, sector: a.sector, close: signal.spotA };

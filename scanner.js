@@ -19,13 +19,13 @@
 //  backoff on 429 errors (up to FETCH_RETRIES attempts).
 // ═══════════════════════════════════════════════════════
 
-const YahooFinance = require('yahoo-finance2').default;
-const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey', 'ripHistorical'] });
+require('dotenv').config();
+const { getAllDailyBars, getLatestTrade, DELAY_MS } = require('./alpaca-client');
 const db = require('./db');
 
-// ── Universe ────────────────────────────────────────────
+// ── Universe (US-only, Alpaca) ──────────────────────────
 const UNIVERSE = [
-  // ── DEFENSE (17) ──────────────────────────────────────
+  // ── DEFENSE (14) ──────────────────────────────────────
   { ticker: 'LMT',     name: 'Lockheed Martin',   sector: 'DEFENSE'    },
   { ticker: 'RTX',     name: 'Raytheon',           sector: 'DEFENSE'    },
   { ticker: 'NOC',     name: 'Northrop Grumman',   sector: 'DEFENSE'    },
@@ -35,15 +35,12 @@ const UNIVERSE = [
   { ticker: 'HII',     name: 'Huntington Ingalls', sector: 'DEFENSE'    },
   { ticker: 'LDOS',    name: 'Leidos',             sector: 'DEFENSE'    },
   { ticker: 'SAIC',    name: 'SAIC',               sector: 'DEFENSE'    },
-  { ticker: 'RHM.DE',  name: 'Rheinmetall',        sector: 'DEFENSE'    },
-  { ticker: 'HAG.DE',  name: 'Hensoldt',           sector: 'DEFENSE'    },
-  { ticker: 'HO.PA',   name: 'Thales',             sector: 'DEFENSE'    },
-  { ticker: 'BA.L',    name: 'BAE Systems',        sector: 'DEFENSE'    },
-  { ticker: 'LDO.MI',  name: 'Leonardo',           sector: 'DEFENSE'    },
-  { ticker: 'AIR.PA',  name: 'Airbus',             sector: 'DEFENSE'    },
-  { ticker: 'MTX.DE',  name: 'MTU Aero Engines',   sector: 'DEFENSE'    },
   { ticker: 'ESLT',    name: 'Elbit Systems',      sector: 'DEFENSE'    },
-  // ── ENERGY (13) ───────────────────────────────────────
+  { ticker: 'BWXT',    name: 'BWX Technologies',   sector: 'DEFENSE'    },
+  { ticker: 'KTOS',    name: 'Kratos Defense',     sector: 'DEFENSE'    },
+  { ticker: 'TDG',     name: 'TransDigm',          sector: 'DEFENSE'    },
+  { ticker: 'HWM',     name: 'Howmet Aerospace',   sector: 'DEFENSE'    },
+  // ── ENERGY (14) ───────────────────────────────────────
   { ticker: 'XOM',     name: 'ExxonMobil',         sector: 'ENERGY'     },
   { ticker: 'CVX',     name: 'Chevron',            sector: 'ENERGY'     },
   { ticker: 'HAL',     name: 'Halliburton',        sector: 'ENERGY'     },
@@ -52,11 +49,12 @@ const UNIVERSE = [
   { ticker: 'COP',     name: 'ConocoPhillips',     sector: 'ENERGY'     },
   { ticker: 'EOG',     name: 'EOG Resources',      sector: 'ENERGY'     },
   { ticker: 'PSX',     name: 'Phillips 66',        sector: 'ENERGY'     },
-  { ticker: 'TTE.PA',  name: 'TotalEnergies',      sector: 'ENERGY'     },
-  { ticker: 'SHEL.L',  name: 'Shell',              sector: 'ENERGY'     },
-  { ticker: 'BP.L',    name: 'BP',                 sector: 'ENERGY'     },
-  { ticker: 'EQNR.OL', name: 'Equinor',            sector: 'ENERGY'     },
-  { ticker: 'ENI.MI',  name: 'ENI',                sector: 'ENERGY'     },
+  { ticker: 'DVN',     name: 'Devon Energy',       sector: 'ENERGY'     },
+  { ticker: 'FANG',    name: 'Diamondback Energy', sector: 'ENERGY'     },
+  { ticker: 'OXY',     name: 'Occidental',         sector: 'ENERGY'     },
+  { ticker: 'MPC',     name: 'Marathon Petroleum', sector: 'ENERGY'     },
+  { ticker: 'VLO',     name: 'Valero Energy',      sector: 'ENERGY'     },
+  { ticker: 'PXD',     name: 'Pioneer Natural',    sector: 'ENERGY'     },
   // ── SHIPPING (6) ──────────────────────────────────────
   { ticker: 'FRO',     name: 'Frontline',          sector: 'SHIPPING'   },
   { ticker: 'STNG',    name: 'Scorpio Tankers',    sector: 'SHIPPING'   },
@@ -69,7 +67,7 @@ const UNIVERSE = [
   { ticker: 'USO',     name: 'Oil ETF',            sector: 'COMMODITY'  },
   { ticker: 'UNG',     name: 'Natural Gas ETF',    sector: 'COMMODITY'  },
   { ticker: 'SLV',     name: 'Silver ETF',         sector: 'COMMODITY'  },
-  // ── SEMICONDUCTORS (8) ────────────────────────────────
+  // ── SEMIS (16) ────────────────────────────────────────
   { ticker: 'NVDA',    name: 'NVIDIA',             sector: 'SEMIS'      },
   { ticker: 'AMD',     name: 'AMD',                sector: 'SEMIS'      },
   { ticker: 'INTC',    name: 'Intel',              sector: 'SEMIS'      },
@@ -78,31 +76,40 @@ const UNIVERSE = [
   { ticker: 'MU',      name: 'Micron',             sector: 'SEMIS'      },
   { ticker: 'LRCX',    name: 'Lam Research',       sector: 'SEMIS'      },
   { ticker: 'AMAT',    name: 'Applied Materials',  sector: 'SEMIS'      },
-  // ── TECH/CYBER (8) ────────────────────────────────────
-  { ticker: 'ASML.AS', name: 'ASML',               sector: 'TECH'       },
-  { ticker: 'SAP.DE',  name: 'SAP',                sector: 'TECH'       },
-  { ticker: 'SIE.DE',  name: 'Siemens',            sector: 'TECH'       },
-  { ticker: 'CAP.PA',  name: 'Capgemini',          sector: 'TECH'       },
+  { ticker: 'AVGO',    name: 'Broadcom',           sector: 'SEMIS'      },
+  { ticker: 'KLAC',    name: 'KLA Corp',           sector: 'SEMIS'      },
+  { ticker: 'MRVL',    name: 'Marvell',            sector: 'SEMIS'      },
+  { ticker: 'ON',      name: 'ON Semi',            sector: 'SEMIS'      },
+  { ticker: 'SWKS',    name: 'Skyworks',           sector: 'SEMIS'      },
+  { ticker: 'TXN',     name: 'Texas Instruments',  sector: 'SEMIS'      },
+  { ticker: 'NXPI',    name: 'NXP Semi',           sector: 'SEMIS'      },
+  { ticker: 'ADI',     name: 'Analog Devices',     sector: 'SEMIS'      },
+  // ── TECH (13) ─────────────────────────────────────────
   { ticker: 'PANW',    name: 'Palo Alto',          sector: 'TECH'       },
   { ticker: 'CRWD',    name: 'CrowdStrike',        sector: 'TECH'       },
   { ticker: 'FTNT',    name: 'Fortinet',           sector: 'TECH'       },
   { ticker: 'ZS',      name: 'Zscaler',            sector: 'TECH'       },
-  // ── BANKS EU (7) ──────────────────────────────────────
-  { ticker: 'DBK.DE',  name: 'Deutsche Bank',      sector: 'BANKS'      },
-  { ticker: 'BNP.PA',  name: 'BNP Paribas',        sector: 'BANKS'      },
-  { ticker: 'HSBA.L',  name: 'HSBC',               sector: 'BANKS'      },
-  { ticker: 'SAN.MC',  name: 'Santander',          sector: 'BANKS'      },
-  { ticker: 'UCG.MI',  name: 'UniCredit',          sector: 'BANKS'      },
-  { ticker: 'ING.AS',  name: 'ING',                sector: 'BANKS'      },
-  { ticker: 'CBK.DE',  name: 'Commerzbank',        sector: 'BANKS'      },
-  // ── BANKS US (6) ──────────────────────────────────────
+  { ticker: 'CRM',     name: 'Salesforce',         sector: 'TECH'       },
+  { ticker: 'ORCL',    name: 'Oracle',             sector: 'TECH'       },
+  { ticker: 'SNOW',    name: 'Snowflake',          sector: 'TECH'       },
+  { ticker: 'NET',     name: 'Cloudflare',         sector: 'TECH'       },
+  { ticker: 'DDOG',    name: 'Datadog',            sector: 'TECH'       },
+  { ticker: 'MDB',     name: 'MongoDB',            sector: 'TECH'       },
+  { ticker: 'PLTR',    name: 'Palantir',           sector: 'TECH'       },
+  { ticker: 'NOW',     name: 'ServiceNow',         sector: 'TECH'       },
+  { ticker: 'WDAY',    name: 'Workday',            sector: 'TECH'       },
+  // ── US_BANKS (10) ─────────────────────────────────────
   { ticker: 'JPM',     name: 'JPMorgan',           sector: 'US_BANKS'   },
   { ticker: 'BAC',     name: 'Bank of America',    sector: 'US_BANKS'   },
   { ticker: 'GS',      name: 'Goldman Sachs',      sector: 'US_BANKS'   },
   { ticker: 'MS',      name: 'Morgan Stanley',     sector: 'US_BANKS'   },
   { ticker: 'C',       name: 'Citigroup',          sector: 'US_BANKS'   },
   { ticker: 'WFC',     name: 'Wells Fargo',        sector: 'US_BANKS'   },
-  // ── MINING (7) ────────────────────────────────────────
+  { ticker: 'SCHW',    name: 'Schwab',             sector: 'US_BANKS'   },
+  { ticker: 'USB',     name: 'US Bancorp',         sector: 'US_BANKS'   },
+  { ticker: 'PNC',     name: 'PNC Financial',      sector: 'US_BANKS'   },
+  { ticker: 'TFC',     name: 'Truist',             sector: 'US_BANKS'   },
+  // ── MINING (11) ───────────────────────────────────────
   { ticker: 'NEM',     name: 'Newmont',            sector: 'MINING'     },
   { ticker: 'GOLD',    name: 'Barrick Gold',       sector: 'MINING'     },
   { ticker: 'FCX',     name: 'Freeport-McMoRan',   sector: 'MINING'     },
@@ -110,46 +117,40 @@ const UNIVERSE = [
   { ticker: 'RIO',     name: 'Rio Tinto',          sector: 'MINING'     },
   { ticker: 'VALE',    name: 'Vale',               sector: 'MINING'     },
   { ticker: 'SCCO',    name: 'Southern Copper',    sector: 'MINING'     },
-  // ── PHARMA (8) ────────────────────────────────────────
+  { ticker: 'TECK',    name: 'Teck Resources',     sector: 'MINING'     },
+  { ticker: 'AA',      name: 'Alcoa',              sector: 'MINING'     },
+  { ticker: 'CLF',     name: 'Cleveland-Cliffs',   sector: 'MINING'     },
+  { ticker: 'MP',      name: 'MP Materials',       sector: 'MINING'     },
+  // ── PHARMA (12) ───────────────────────────────────────
   { ticker: 'JNJ',     name: 'Johnson & Johnson',  sector: 'PHARMA'     },
   { ticker: 'PFE',     name: 'Pfizer',             sector: 'PHARMA'     },
   { ticker: 'MRK',     name: 'Merck',              sector: 'PHARMA'     },
   { ticker: 'ABBV',    name: 'AbbVie',             sector: 'PHARMA'     },
   { ticker: 'LLY',     name: 'Eli Lilly',          sector: 'PHARMA'     },
   { ticker: 'NVO',     name: 'Novo Nordisk',       sector: 'PHARMA'     },
-  { ticker: 'AZN.L',   name: 'AstraZeneca',        sector: 'PHARMA'     },
-  { ticker: 'ROG.SW',  name: 'Roche',              sector: 'PHARMA'     },
-  // ── AUTOS (6) ─────────────────────────────────────────
-  { ticker: 'BMW.DE',  name: 'BMW',                sector: 'AUTOS'      },
-  { ticker: 'MBG.DE',  name: 'Mercedes-Benz',      sector: 'AUTOS'      },
-  { ticker: 'VOW3.DE', name: 'Volkswagen',         sector: 'AUTOS'      },
+  { ticker: 'AZN',     name: 'AstraZeneca',        sector: 'PHARMA'     },
+  { ticker: 'BMY',     name: 'Bristol-Myers',      sector: 'PHARMA'     },
+  { ticker: 'AMGN',    name: 'Amgen',              sector: 'PHARMA'     },
+  { ticker: 'GILD',    name: 'Gilead',             sector: 'PHARMA'     },
+  { ticker: 'REGN',    name: 'Regeneron',          sector: 'PHARMA'     },
+  { ticker: 'VRTX',    name: 'Vertex',             sector: 'PHARMA'     },
+  // ── AUTOS (7) ─────────────────────────────────────────
+  { ticker: 'F',       name: 'Ford',               sector: 'AUTOS'      },
+  { ticker: 'GM',      name: 'General Motors',     sector: 'AUTOS'      },
   { ticker: 'STLA',    name: 'Stellantis',         sector: 'AUTOS'      },
   { ticker: 'TM',      name: 'Toyota',             sector: 'AUTOS'      },
-  { ticker: 'F',       name: 'Ford',               sector: 'AUTOS'      },
-  // ── INFRA (6) ─────────────────────────────────────────
-  { ticker: 'RWE.DE',  name: 'RWE',                sector: 'INFRA'      },
-  { ticker: 'ENEL.MI', name: 'Enel',               sector: 'INFRA'      },
+  { ticker: 'APTV',    name: 'Aptiv',              sector: 'AUTOS'      },
+  { ticker: 'BWA',     name: 'BorgWarner',         sector: 'AUTOS'      },
+  { ticker: 'ALV',     name: 'Autoliv',            sector: 'AUTOS'      },
+  // ── INFRA (8) ─────────────────────────────────────────
   { ticker: 'NEE',     name: 'NextEra Energy',     sector: 'INFRA'      },
   { ticker: 'PWR',     name: 'Quanta Services',    sector: 'INFRA'      },
   { ticker: 'DUK',     name: 'Duke Energy',        sector: 'INFRA'      },
   { ticker: 'SO',      name: 'Southern Company',   sector: 'INFRA'      },
-  // ── FX – COMMODITY BLOCK (5) ──────────────────────────
-  // AUD/NZD is the classic mean-reverting FX pair. Both commodity
-  // exporters, neighboring economies, correlated rate cycles.
-  // CAD same story (oil/commodity currency). NOK/SEK = Scandinavian block.
-  // System pairs them automatically: AUD vs NZD, AUD vs CAD, NOK vs SEK, etc.
-  { ticker: 'AUDUSD=X', name: 'AUD/USD',           sector: 'FX_COMMODITY' },
-  { ticker: 'NZDUSD=X', name: 'NZD/USD',           sector: 'FX_COMMODITY' },
-  { ticker: 'CADUSD=X', name: 'CAD/USD',           sector: 'FX_COMMODITY' },
-  { ticker: 'NOKUSD=X', name: 'NOK/USD',           sector: 'FX_COMMODITY' },
-  { ticker: 'SEKUSD=X', name: 'SEK/USD',           sector: 'FX_COMMODITY' },
-  // ── FX – MAJOR BLOCK (4) ─────────────────────────────
-  // EUR/CHF and EUR/GBP are tightly bound by trade flows and geography.
-  // JPY as the global carry-trade anchor.
-  { ticker: 'EURUSD=X', name: 'EUR/USD',           sector: 'FX_MAJOR'   },
-  { ticker: 'GBPUSD=X', name: 'GBP/USD',           sector: 'FX_MAJOR'   },
-  { ticker: 'CHFUSD=X', name: 'CHF/USD',           sector: 'FX_MAJOR'   },
-  { ticker: 'JPYUSD=X', name: 'JPY/USD',           sector: 'FX_MAJOR'   },
+  { ticker: 'AES',     name: 'AES Corp',           sector: 'INFRA'      },
+  { ticker: 'XEL',     name: 'Xcel Energy',        sector: 'INFRA'      },
+  { ticker: 'ES',      name: 'Eversource',         sector: 'INFRA'      },
+  { ticker: 'VST',     name: 'Vistra',             sector: 'INFRA'      },
 ];
 
 // All sectors active. The signal works in every sector (97.8% z-reversion).
@@ -159,13 +160,9 @@ const SECTOR_WHITELIST = new Set(
 );
 
 // ── Rate Limit Configuration ────────────────────────────
-// Yahoo Finance unofficial cap: ~60 req/min.
-// YAHOO_RPM = 50 gives a 17% safety buffer.
-// FETCH_DELAY_MS is derived automatically. Do not override manually.
-const YAHOO_RPM       = 50;
-const FETCH_DELAY_MS  = Math.ceil(60000 / YAHOO_RPM);  // 1200ms
-const FETCH_RETRIES   = 3;
-const BACKOFF_BASE_MS = 8000;
+// Alpaca: 200 req/min free tier. DELAY_MS imported from alpaca-client.
+const FETCH_DELAY_MS  = DELAY_MS;
+const YAHOO_RPM       = Math.ceil(60000 / DELAY_MS); // compat export
 
 // ── Pair Analysis Configuration ─────────────────────────
 function rollingLookback(tradingDays = 504) {
@@ -192,18 +189,8 @@ const CONFIG = {
   minVolumeUSD:  5_000_000,    // $5M median daily turnover (20M was killing European/shipping names)
 };
 
-// ── FX Configuration ────────────────────────────────────
-// All prices converted to USD before cointegration testing.
-// Fetched once per scan run, aligned with equity series by length.
-const FX_MAP = { EUR: 'EURUSD=X', GBP: 'GBPUSD=X', NOK: 'NOKUSD=X', CHF: 'CHFUSD=X' };
-
-function getCurrency(ticker) {
-  if (/\.(DE|PA|AS|MI|MC)$/.test(ticker)) return 'EUR';
-  if (/\.L$/.test(ticker))                return 'GBP';
-  if (/\.OL$/.test(ticker))               return 'NOK';
-  if (/\.SW$/.test(ticker))               return 'CHF';
-  return 'USD';
-}
+// All tickers are US — no FX conversion needed.
+function getCurrency() { return 'USD'; }
 
 // ══════════════════════════════════════════════════════════
 //  LINEAR ALGEBRA
@@ -508,35 +495,21 @@ function alignSeries(a, b) {
 
 // Convert a log-price series to USD by adding the log FX rate.
 // If FX data is unavailable, returns the series unchanged and logs a warning.
-function toLogUSD(logPrices, currency, fxLogMap) {
-  if (currency === 'USD') return logPrices;
-  const fxLog = fxLogMap[currency];
-  if (!fxLog) return logPrices;  // best-effort if FX fetch failed
-  const [lp, fx] = alignSeries(logPrices, fxLog);
-  return lp.map((v, i) => v + fx[i]);
-}
+// All US — toLogUSD is identity
+function toLogUSD(logPrices) { return logPrices; }
 
-// Fetch daily closes with exponential backoff on 429 errors.
-// Schema validation errors (e.g. null currency field for ING.AS on yahoo-finance2 < 3.14.0)
-// are handled by recovering the closes array from the partial result rather than
-// suppressing all validation globally. Run "npm install yahoo-finance2@latest" to fix
-// the underlying schema issue without needing the recovery path.
-async function fetchPrices(ticker, lookback, attempt) {
-  attempt = attempt || 0;
+// Fetch daily closes via Alpaca. Returns array of close prices or null.
+async function fetchPrices(ticker, lookback) {
   try {
-    const chart = await yahooFinance.chart(ticker, {
-      period1:  lookback,
-      period2:  new Date().toISOString().split('T')[0],
-      interval: '1d',
-    }, { validateResult: false });
-    const quotes  = chart.quotes || [];
-    const closes  = quotes.map(d => d.adjclose ?? d.close).filter(v => v != null && v > 0);
-    const volumes = quotes.map(d => (d.volume || 0) * (d.close || 0)).filter(v => v > 0);
-
+    const { getDailyBars } = require('./alpaca-client');
+    const endDate = new Date().toISOString().split('T')[0];
+    const bars = await getDailyBars(ticker, lookback, endDate);
+    const closes = bars.map(b => b.close).filter(v => v > 0);
     if (closes.length < CONFIG.minObs) return null;
 
-    // Median daily dollar volume check (skip for FX tickers)
-    if (!ticker.includes('=')) {
+    // Median daily dollar volume check
+    const volumes = bars.map(b => (b.volume || 0) * b.close).filter(v => v > 0);
+    if (volumes.length > 0) {
       const sorted = [...volumes].sort((a, b) => a - b);
       const medVol = sorted[Math.floor(sorted.length / 2)] || 0;
       if (medVol < CONFIG.minVolumeUSD) {
@@ -544,15 +517,8 @@ async function fetchPrices(ticker, lookback, attempt) {
         return null;
       }
     }
-
     return closes;
   } catch (e) {
-    if (/429|Too Many|rate.?limit/i.test(e.message || '') && attempt < FETCH_RETRIES) {
-      const wait = BACKOFF_BASE_MS * Math.pow(2, attempt);
-      db.log('RATE_LIMIT', `${ticker}: 429 – waiting ${(wait / 1000).toFixed(0)}s (attempt ${attempt + 1}/${FETCH_RETRIES})`);
-      await new Promise(r => setTimeout(r, wait));
-      return fetchPrices(ticker, lookback, attempt + 1);
-    }
     db.log('FETCH_ERR', `${ticker}: ${e.message}`);
     return null;
   }
@@ -591,19 +557,16 @@ function isStable(residuals) {
 // Full analysis for one pair. Returns a raw result object (before BH correction)
 // containing the ADF p-value. Only pairs that pass BH receive full OU/z-score analysis.
 // Returns null if prices are insufficient.
-function rawPairAnalysis(entryA, entryB, pricesA, pricesB, fxLogMap) {
+function rawPairAnalysis(entryA, entryB, pricesA, pricesB) {
   const [pa, pb] = alignSeries(pricesA, pricesB);
   if (pa.length < CONFIG.minObs) return null;
 
-  const curA   = getCurrency(entryA.ticker);
-  const curB   = getCurrency(entryB.ticker);
-  const logA   = pa.map(p => Math.log(p));
-  const logB   = pb.map(p => Math.log(p));
-  const logA_usd = toLogUSD(logA, curA, fxLogMap);
-  const logB_usd = toLogUSD(logB, curB, fxLogMap);
+  const logA = pa.map(p => Math.log(p));
+  const logB = pb.map(p => Math.log(p));
+  // All USD — no FX conversion needed
+  const logA_usd = logA;
+  const logB_usd = logB;
 
-  // Static OLS bidirectional — ADF on OLS residuals, not Kalman residuals.
-  // Kalman would make all pairs look cointegrated (adapts to remove any trend).
   const eg = olsBidirectional(logA_usd, logB_usd);
   if (!eg) return null;
 
@@ -614,7 +577,7 @@ function rawPairAnalysis(entryA, entryB, pricesA, pricesB, fxLogMap) {
     hedgeRatio:  eg.hedgeRatio,
     adf:         eg.adf,
     egDirection: eg.egDirection,
-    crossCurrency: curA !== curB,
+    crossCurrency: false,
   };
 }
 
@@ -835,74 +798,39 @@ async function scanAll(opts) {
   const onProgress = (opts && opts.onProgress) || (() => {});
   const pairs   = generatePairs();
   const tickers = [...new Set(UNIVERSE.map(e => e.ticker))];
-  const fxNeeded = [...new Set(UNIVERSE.map(e => getCurrency(e.ticker)).filter(c => c !== 'USD'))];
 
-  // Compute rolling lookback once for the entire scan
   const lookback = rollingLookback(CONFIG.lookbackDays);
-
-  // Total fetch count: 1 VIX + equity tickers + FX rates
-  const totalFetches = 1 + tickers.length + fxNeeded.length;
+  const totalFetches = tickers.length;
   const etaSec = Math.ceil((totalFetches * FETCH_DELAY_MS) / 1000);
   db.log('SCAN_START',
-    `${pairs.length} pairs | ${tickers.length} equity + ${fxNeeded.length} FX tickers | ` +
-    `lookback=${lookback} | ${YAHOO_RPM} req/min | ETA ~${etaSec}s`);
+    `${pairs.length} pairs | ${tickers.length} tickers | lookback=${lookback} | ETA ~${etaSec}s`);
   onProgress({ phase: 'fetching', tickersDone: 0, tickersTotal: totalFetches, pairsTotal: pairs.length });
 
-  // ── Fetch VIX FIRST (before equity tickers avoid 429) ──
-  // VIX is used for regime filtering. Fetching it first guarantees it is
-  // not rate-limited by preceding equity requests. The yahoo-finance2 quote
-  // call uses validateResult:false only here because index quotes have
-  // known schema quirks unrelated to the closes data we care about for pairs.
+  // ── Fetch VIX via Alpaca ──────────────────────────────
   let vixValue = null;
   try {
-    const vixQuote = await yahooFinance.quote('^VIX', {}, { validateResult: false });
-    if (vixQuote && vixQuote.regularMarketPrice != null) {
-      vixValue = +vixQuote.regularMarketPrice.toFixed(1);
-      db.log('VIX_FETCH', `VIX ${vixValue}`);
-    } else {
-      db.log('VIX_WARN', 'VIX quote returned no price — regime filter disabled for this scan');
-    }
-  } catch (e) {
-    db.log('VIX_WARN', `VIX fetch failed (${(e.message || '').slice(0, 60)}) — regime filter disabled`);
-  }
-  onProgress({ phase: 'fetching', tickersDone: 1, tickersTotal: totalFetches, vix: vixValue });
-  await new Promise(r => setTimeout(r, FETCH_DELAY_MS));
+    const { getLatestTrade: getLT } = require('./alpaca-client');
+    const vix = await getLT('VIXY'); // VIX proxy ETF
+    if (vix) { vixValue = +vix.toFixed(1); db.log('VIX_FETCH', `VIX proxy ${vixValue}`); }
+  } catch { db.log('VIX_WARN', 'VIX fetch failed'); }
+  onProgress({ phase: 'fetching', tickersDone: 0, tickersTotal: totalFetches, vix: vixValue });
 
-  // ── Fetch equity prices (batched) ─────────────────────
+  // ── Fetch equity prices ───────────────────────────────
   const priceMap = {};
-  const BATCH_SIZE = 1;
   let failures = 0;
   const t0 = Date.now();
-  let tickersDone = 1;  // VIX already fetched
+  let tickersDone = 0;
 
-  for (let i = 0; i < tickers.length; i += BATCH_SIZE) {
-    const batch = tickers.slice(i, i + BATCH_SIZE);
-    const batchT0 = Date.now();
-    const results = await Promise.all(batch.map(t => fetchPrices(t, lookback)));
-    batch.forEach((t, j) => {
-      priceMap[t] = results[j];
-      if (!results[j]) failures++;
-      tickersDone++;
-    });
-    onProgress({ phase: 'fetching', tickersDone, tickersTotal: tickers.length + fxNeeded.length });
-    const wait = FETCH_DELAY_MS - (Date.now() - batchT0);
-    if (i + BATCH_SIZE < tickers.length && wait > 0)
-      await new Promise(r => setTimeout(r, wait));
+  for (const t of tickers) {
+    const closes = await fetchPrices(t, lookback);
+    priceMap[t] = closes;
+    if (!closes) failures++;
+    tickersDone++;
+    onProgress({ phase: 'fetching', tickersDone, tickersTotal: totalFetches });
   }
 
-  // ── Fetch FX rates (single batch) ───────────────────
-  const fxLogMap = {};
-  const fxResults = await Promise.all(fxNeeded.map(ccy => fetchPrices(FX_MAP[ccy], lookback)));
-  fxNeeded.forEach((ccy, j) => {
-    const raw = fxResults[j];
-    fxLogMap[ccy] = raw ? raw.map(p => Math.log(p)) : null;
-    if (!raw) db.log('FX_WARN', `${FX_MAP[ccy]}: fetch failed – cross-currency pairs for ${ccy} will use raw prices`);
-    tickersDone++;
-  });
-  onProgress({ phase: 'fetching', tickersDone, tickersTotal: tickers.length + fxNeeded.length });
-
   const fetched = tickers.length - failures;
-  db.log('FETCH_DONE', `${fetched}/${tickers.length} equity | ${Object.values(fxLogMap).filter(Boolean).length}/${fxNeeded.length} FX | ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  db.log('FETCH_DONE', `${fetched}/${tickers.length} tickers | ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
   // ── Pass 1: compute ADF p-values for all pairs ───────
   const rawResults = [];
@@ -911,7 +839,7 @@ async function scanAll(opts) {
     const pa = priceMap[entryA.ticker];
     const pb = priceMap[entryB.ticker];
     if (!pa || !pb) continue;
-    const raw = rawPairAnalysis(entryA, entryB, pa, pb, fxLogMap);
+    const raw = rawPairAnalysis(entryA, entryB, pa, pb);
     if (raw) rawResults.push({ idx, raw, sameSector });
   }
 
@@ -941,6 +869,60 @@ async function scanAll(opts) {
   const rejected = Object.values(funnel).reduce((a,b) => a+b, 0);
   db.log('SCAN_FUNNEL',
     `${survived.size} BH survivors → ${rejected} rejected [${funnelParts.join(' ')}] → ${signals.length} signals`);
+
+  // ── Pass 2b: Sector z-scores for ALL BH survivors (Mahalanobis context) ──
+  const sectorZMap = {};
+  for (let i = 0; i < rawResults.length; i++) {
+    if (!survived.has(i)) continue;
+    const { raw, sameSector } = rawResults[i];
+    if (!sameSector) continue;
+    const { hedgeRatio, entryA } = raw;
+    const canonical = raw.spread;
+    const ou = ouFit(canonical);
+    if (!ou) continue;
+    const zWindow = Math.max(20, Math.round(2 * ou.halfLife));
+    const z = rollingZScore(canonical, zWindow);
+    if (z === null) continue;
+    const sector = entryA.sector;
+    if (!sectorZMap[sector]) sectorZMap[sector] = [];
+    sectorZMap[sector].push({ tickerA: entryA.ticker, tickerB: raw.entryB.ticker, z, absZ: Math.abs(z), halfLife: ou.halfLife, kappa: ou.kappa });
+  }
+
+  // ── Mahalanobis sector anomaly score per signal ──
+  for (const sig of signals) {
+    const sectorPairs = sectorZMap[sig.sector];
+    if (!sectorPairs || sectorPairs.length <= 1) {
+      sig._mahal = 3.0; sig._sectorContext = 'ISOLATED'; sig._sectorSize = sectorPairs ? sectorPairs.length : 0;
+      sig._sectorElevated = 0; sig._sectorSignalFrac = 0;
+      continue;
+    }
+    const absZScores = sectorPairs.map(p => p.absZ);
+    const n = absZScores.length;
+    const mean = absZScores.reduce((a, b) => a + b, 0) / n;
+    const variance = absZScores.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
+    const std = Math.sqrt(variance);
+    const elevatedFrac = absZScores.filter(z => z > 1.5).length / n;
+    const signalFrac = absZScores.filter(z => z >= CONFIG.zScoreEntry).length / n;
+
+    if (std < 0.01) {
+      sig._mahal = 0; sig._sectorContext = 'REGIME_SHIFT';
+    } else {
+      const rawMahal = (Math.abs(sig.z_score) - mean) / std;
+      const regimeAdjustment = Math.max(0, 1.0 - elevatedFrac * 2);
+      sig._mahal = rawMahal * regimeAdjustment;
+      if (elevatedFrac > 0.6) sig._sectorContext = 'REGIME_SHIFT';
+      else if (signalFrac > 0.4) sig._sectorContext = 'SECTOR_MOVE';
+      else if (rawMahal > 1.5) sig._sectorContext = 'ANOMALOUS';
+      else sig._sectorContext = 'WEAK_ANOMALY';
+    }
+    sig._sectorSize = n;
+    sig._sectorElevated = +(elevatedFrac * 100).toFixed(0);
+    sig._sectorSignalFrac = +(signalFrac * 100).toFixed(0);
+  }
+
+  const ctxCounts = {};
+  for (const sig of signals) ctxCounts[sig._sectorContext] = (ctxCounts[sig._sectorContext] || 0) + 1;
+  db.log('MAHAL_SCAN', Object.entries(ctxCounts).map(([k,v]) => `${k}=${v}`).join(' ') + ` | total=${signals.length}`);
 
   signals.sort((a, b) => Math.abs(b.z_score) - Math.abs(a.z_score));
   db.log('SCAN_DONE',

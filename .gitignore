@@ -4,3 +4,4 @@ spreadsim.db-wal
 spreadsim.db-shm
 *.tar.xz
 .claude/
+.env

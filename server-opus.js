@@ -527,21 +527,6 @@ async function runScanner() {
     const pair = `${sig.ticker_a}/${sig.ticker_b}`;
     if (!regOk) continue;
 
-    // Mahalanobis sector filter — block regime shifts, penalize sector moves
-    if (sig._sectorContext === 'REGIME_SHIFT') {
-      decisions.push({ pair, sector: sig.sector, z: sig.z_score, score: sig.score,
-        action: 'BLOCKED', reason: `regime shift: ${sig._sectorElevated}% elevated, mahal=${sig._mahal?.toFixed(2)}` });
-      db.log('MAHAL_BLOCK', `${pair}: REGIME_SHIFT mahal=${sig._mahal?.toFixed(2)} elevated=${sig._sectorElevated}%`);
-      continue;
-    }
-    if (sig._sectorContext === 'SECTOR_MOVE') {
-      sig.score = Math.max(50, sig.score - 15);
-      db.log('MAHAL_PENALIZE', `${pair}: SECTOR_MOVE mahal=${sig._mahal?.toFixed(2)} → score=${sig.score}`);
-    }
-    if (sig._sectorContext === 'ISOLATED' || sig._sectorContext === 'ANOMALOUS') {
-      sig.score = Math.min(100, sig.score + 10);
-    }
-
     // Phase 3.1: GDELT defense tension boost
     if (gdelt && gdelt.tensionIndex > 5 && sig.sector === 'DEFENSE') {
       sig.score = Math.min(100, sig.score + 10);
