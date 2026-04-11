@@ -166,7 +166,32 @@ async function run() {
       if (inTrade) {
         const age = t - entryIdx;
         const longA = entryData.direction === 'LONG_A_SHORT_B';
-        const notional = 1000; // standardized for comparison
+        const notional = 1000;
+
+        // Live Kalman hedge update (matches server.js kalmanUpdate)
+        if (!entryData._kf) {
+          entryData._kf = {
+            theta: [0, fit.beta],
+            P: [[1, 0], [0, 1]],
+          };
+        }
+        const kfDelta = 0.0001, kfVe = 0.001;
+        const logA_t = Math.log(testSlice[t].a);
+        const logB_t = Math.log(testSlice[t].b);
+        const kfF = [1, logB_t];
+        const kfPp = [[entryData._kf.P[0][0]+kfDelta, entryData._kf.P[0][1]],
+                       [entryData._kf.P[1][0], entryData._kf.P[1][1]+kfDelta]];
+        const kfPF = [kfPp[0][0]*kfF[0]+kfPp[0][1]*kfF[1], kfPp[1][0]*kfF[0]+kfPp[1][1]*kfF[1]];
+        const kfS = kfF[0]*kfPF[0]+kfF[1]*kfPF[1]+kfVe;
+        const kfK = [kfPF[0]/kfS, kfPF[1]/kfS];
+        const kfInnov = logA_t - (kfF[0]*entryData._kf.theta[0]+kfF[1]*entryData._kf.theta[1]);
+        entryData._kf.theta = [entryData._kf.theta[0]+kfK[0]*kfInnov, entryData._kf.theta[1]+kfK[1]*kfInnov];
+        entryData._kf.P = [[kfPp[0][0]-kfK[0]*kfPF[0], kfPp[0][1]-kfK[0]*kfPF[1]],
+                            [kfPp[1][0]-kfK[1]*kfPF[0], kfPp[1][1]-kfK[1]*kfPF[1]]];
+        const liveBeta = entryData._kf.theta[1];
+
+        // P&L uses ENTRY beta (actual position shares are fixed at open)
+        // Kalman beta tracked for diagnostics only
         const sharesA = notional / entryData.entryPriceA;
         const sharesB = sharesA * fit.beta * entryData.entryPriceA / entryData.entryPriceB;
         const pnlA = sharesA * (testSlice[t].a - entryData.entryPriceA) * (longA ? 1 : -1);
@@ -174,16 +199,7 @@ async function run() {
         const pnlUsd = pnlA + pnlB;
         const pnlPct = (pnlUsd / notional) * 100;
 
-        // Compute what beta SHOULD be now (re-estimate on recent data)
-        let currentBeta = fit.beta;
-        if (t > 20) {
-          const recentA = aligned.slice(Math.max(0, testStart + t - 20), testStart + t + 1).map(d => Math.log(d.a));
-          const recentB = aligned.slice(Math.max(0, testStart + t - 20), testStart + t + 1).map(d => Math.log(d.b));
-          if (recentA.length > 5) {
-            const recentFit = ols(recentA, recentB);
-            if (recentFit && recentFit.beta > 0) currentBeta = recentFit.beta;
-          }
-        }
+        const currentBeta = liveBeta;
         const betaDrift = +((currentBeta - fit.beta) / fit.beta * 100).toFixed(2);
 
         // Daily log entry
@@ -198,6 +214,7 @@ async function run() {
           pnlUsd: +pnlUsd.toFixed(2),
           pnlPct: +pnlPct.toFixed(3),
           currentBeta: +currentBeta.toFixed(6),
+          kalmanBeta: +liveBeta.toFixed(6),
           betaDriftPct: betaDrift,
         });
 
