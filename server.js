@@ -636,53 +636,111 @@ async function runScanner() {
 
 // (Options updatePnL removed in v5.2 — options infrastructure deprecated)
 
-// ── DYNAMIC SLIDING WINDOW EXIT ──────────────────────────
-// One unified exit function. Parameterized by the trade's own kappa,
-// halfLife, and entryZ. No fixed day counts. No fixed P&L thresholds.
-// The trade carries its own clock (ageFrac) and expected reversion curve.
-function dynamicExit(pos, zRolling, pnlPct, ageDays) {
-  const ageFrac = ageDays / Math.max(1, pos.half_life);
-  const absZ = Math.abs(zRolling);
-  const absEntryZ = Math.abs(pos.z_entry);
-  const expectedZ = absEntryZ * Math.exp(-(pos.ou_kappa || 0.05) * ageDays);
+// ── LIVE KALMAN HEDGE UPDATE ─────────────────────────────
+// Single-step Kalman predict-update for the hedge ratio.
+// State: [alpha_t, beta_t]. Persists on pos object between polls.
+// Identical math to scanner.js kalmanHedgeRatio, but incremental.
+function kalmanUpdate(pos, logA, logB) {
+  const delta = 0.0001;  // matches scanner.js CONFIG.kalmanDelta
+  const Ve = 0.001;
 
-  // Track peaks (persist across poll intervals via pos object)
-  if (pos._maxProgress === undefined) pos._maxProgress = 0;
-  if (pos._maxPnlPct === undefined) pos._maxPnlPct = -Infinity;
-  if (pos._peakAgeFrac === undefined) pos._peakAgeFrac = 0;
-  const progress = absEntryZ > 0 ? 1.0 - (absZ / absEntryZ) : 0;
-  pos._maxProgress = Math.max(pos._maxProgress, progress);
-  if (pnlPct >= pos._maxPnlPct) {
-    pos._maxPnlPct = pnlPct;
-    pos._peakAgeFrac = ageFrac;
+  if (!pos._kf_theta) {
+    pos._kf_theta = [0, pos.kalman_beta ?? pos.hedge_ratio];
+    pos._kf_P = [[1, 0], [0, 1]];
   }
 
-  // 1. REVERT: z has come home
-  if (absZ < 0.5) return 'REVERT';
+  let theta = pos._kf_theta;
+  let P = pos._kf_P;
+  const F = [1, logB];
 
-  // 2. DIVERGE: z moving away, dynamic SL tightens with age
-  //    ageFrac=0: SL = 1.5× entry z. ageFrac=1: SL = 1.0× entry z.
-  const slMult = 1.5 - 0.5 * Math.min(ageFrac, 1.0);
-  if (absZ > absEntryZ * slMult) return 'DIVERGE';
+  const Pp = [[P[0][0] + delta, P[0][1]], [P[1][0], P[1][1] + delta]];
+  const PF = [Pp[0][0] * F[0] + Pp[0][1] * F[1], Pp[1][0] * F[0] + Pp[1][1] * F[1]];
+  const S = F[0] * PF[0] + F[1] * PF[1] + Ve;
+  const K = [PF[0] / S, PF[1] / S];
+  const innov = logA - (F[0] * theta[0] + F[1] * theta[1]);
+  theta = [theta[0] + K[0] * innov, theta[1] + K[1] * innov];
+  P = [[Pp[0][0] - K[0] * PF[0], Pp[0][1] - K[0] * PF[1]],
+       [Pp[1][0] - K[1] * PF[0], Pp[1][1] - K[1] * PF[1]]];
 
-  // 3. TRAIL: protect gains, floor tightens with age
-  //    Floor starts at 80% of peak, decays to 50% over one ageFrac unit.
-  if (pos._maxPnlPct > 1.0 && ageDays >= 1) {
-    const ageSincePeak = ageFrac - pos._peakAgeFrac;
-    const floorPct = Math.max(0.5, 0.8 - 0.3 * Math.min(ageSincePeak, 1.0));
-    const floor = pos._maxPnlPct * floorPct;
-    if (pnlPct < floor) return 'TRAIL';
+  pos._kf_theta = theta;
+  pos._kf_P = P;
+  return theta[1]; // live beta
+}
+
+// ── OPTIMAL STOPPING (Bertram 2010, Zeng & Lee 2014) ────
+// Gamma(k + 1/2) = (2k)! / (4^k * k!) * sqrt(pi)
+function gammaHalfInt(k) {
+  if (k === 0) return Math.sqrt(Math.PI);
+  let num = 1, den = 1;
+  for (let i = 1; i <= 2 * k; i++) num *= i;
+  for (let i = 1; i <= k; i++) den *= i;
+  return (num / (Math.pow(4, k) * den)) * Math.sqrt(Math.PI);
+}
+
+// Expected first-passage time E[T] for OU from +a to -a (dimensionless).
+// Zeng & Lee (2014) eq: sum Gamma((2k+1)/2) * (sqrt2*a)^(2k+1) / (2k+1)!
+// Both directions double the one-sided terms.
+function ouExpectedTime(a) {
+  let sum = 0;
+  const s2a = Math.SQRT2 * a;
+  let powTerm = s2a;
+  let fact = 1;
+  for (let k = 0; k <= 25; k++) {
+    const exp = 2 * k + 1;
+    if (k > 0) {
+      powTerm *= s2a * s2a;
+      fact *= exp * (exp - 1);
+    }
+    const term = gammaHalfInt(k) * powTerm / fact;
+    if (!isFinite(term) || Math.abs(term) < 1e-15) break;
+    sum += term;
   }
+  return sum;
+}
 
-  // 4. STALL: behind the OU curve after meaningful time
-  //    After ageFrac > 0.5, if actual z is > 120% of expected z, underperforming.
-  if (ageFrac > 0.5 && absZ > expectedZ * 1.2) return 'STALL';
+// dE[T]/da — derivative of expected time w.r.t. threshold a.
+function ouExpectedTimeDeriv(a) {
+  let sum = 0;
+  const s2a = Math.SQRT2 * a;
+  for (let k = 0; k <= 25; k++) {
+    // d/da[(s2*a)^(2k+1)/(2k+1)!] = s2*(s2*a)^(2k)/(2k)!
+    let powTerm = 1;
+    let fact = 1;
+    for (let j = 1; j <= 2 * k; j++) { powTerm *= s2a; fact *= j; }
+    const term = gammaHalfInt(k) * Math.SQRT2 * powTerm / fact;
+    if (!isFinite(term) || Math.abs(term) < 1e-15) break;
+    sum += term;
+  }
+  return sum;
+}
 
-  // 5. OVERTIME: dynamic hold limit = 2× halfLife, capped at 20 days
-  const maxHold = Math.min(2.0 * pos.half_life, 20);
-  if (ageDays > maxHold) return 'OVERTIME';
+// Solve Zeng-Lee new optimal rule first-order condition via bisection.
+// FOC: 2 * E[T] = (2*a - c_d) * E'[T]   →   f(a) = 2*E[T] - (2*a - c_d)*E'[T] = 0
+function solveOptimalThreshold(c_d) {
+  const f = (a) => 2 * ouExpectedTime(a) - (2 * a - c_d) * ouExpectedTimeDeriv(a);
+  let lo = Math.max(0.01, c_d / 2 + 0.01);
+  let hi = 5.0;
+  if (f(lo) * f(hi) > 0) return c_d / 2 + 0.5; // fallback
+  for (let i = 0; i < 80; i++) {
+    const mid = (lo + hi) / 2;
+    if (hi - lo < 1e-8) return mid;
+    if (f(lo) * f(mid) <= 0) hi = mid; else lo = mid;
+  }
+  return (lo + hi) / 2;
+}
 
-  return null; // hold
+// Compute optimal exit/stop levels in SPREAD units for a position.
+function computeOptimalLevels(pos) {
+  const kappa = pos.ou_kappa || 0.05;
+  const sigma = pos.ou_sigma || 0.10;
+  const scale = sigma / Math.sqrt(2 * kappa);
+  // Round-trip cost: 20bps × 2 legs × 2 sides = 80bps
+  const c_d = scale > 1e-10 ? 0.0080 / scale : 0.5;
+  const a_d = solveOptimalThreshold(c_d);
+  const exitOffset = a_d * scale;
+  const entryDist = Math.abs(pos.z_entry || 2) * (pos.ou_sigma || 0.10) / Math.sqrt(252 * 2 * kappa);
+  const stopOffset = Math.max(exitOffset * 2.5, entryDist * 1.5);
+  return { exitOffset, stopOffset, a_d: +a_d.toFixed(4), c_d: +c_d.toFixed(4), scale };
 }
 
 // ── PAIR P&L UPDATER ─────────────────────────────────────
@@ -706,16 +764,17 @@ async function updatePairPnL() {
       const entryA_usd = pos.spot_a_entry * fxA;
       const entryB_usd = pos.spot_b_entry * fxB;
 
-      // Phase 1.3C: prefer kalman_beta over static hedge_ratio
-      const beta = pos.kalman_beta ?? pos.hedge_ratio;
-      if (pos.kalman_beta != null) {
-        const drift = Math.abs(pos.kalman_beta - pos.hedge_ratio) / Math.abs(pos.hedge_ratio);
-        if (drift > 0.20) {
-          db.log('PAIR_HEDGE_DRIFT', `${pos.ticker_a}/${pos.ticker_b}: kalman=${pos.kalman_beta.toFixed(4)} ols=${pos.hedge_ratio.toFixed(4)} drift=${(drift*100).toFixed(1)}%`);
-        }
+      // Live Kalman hedge ratio — updates beta on every poll
+      const logA_now = Math.log(spotA) + Math.log(fxA);
+      const logB_now = Math.log(spotB) + Math.log(fxB);
+      const beta = kalmanUpdate(pos, logA_now, logB_now);
+      const entryBeta = pos.kalman_beta ?? pos.hedge_ratio;
+      const drift = Math.abs(beta - entryBeta) / Math.abs(entryBeta);
+      if (drift > 0.20) {
+        db.log('KALMAN_LIVE', `${pos.ticker_a}/${pos.ticker_b}: beta ${entryBeta.toFixed(4)} → ${beta.toFixed(4)} (${(drift*100).toFixed(1)}%)`);
       }
 
-      const currentSpread = (Math.log(spotA) + Math.log(fxA)) - beta * (Math.log(spotB) + Math.log(fxB));
+      const currentSpread = logA_now - beta * logB_now;
 
       // ── FIX 1: Rolling z-score instead of OU z ────────────
       // Gap analysis: rolling z = 97.8% WR, OU z = 28% WR.
@@ -758,11 +817,35 @@ async function updatePairPnL() {
         fx_ok:       (fxFailed.has(curA) || fxFailed.has(curB)) ? 0 : 1,
       });
 
-      // ── DYNAMIC SLIDING WINDOW EXIT ────────────────────────
-      // One unified function. Everything parameterized by the trade's
-      // own kappa, halfLife, and entryZ. No fixed day counts.
+      // ── OPTIMAL STOPPING EXIT (Bertram 2010 / Zeng-Lee 2014) ──
+      // Two computed thresholds replace five heuristic rules.
       const ageDays = (Date.now() - new Date(pos.opened_at).getTime()) / 86400000;
-      const exitReason = dynamicExit(pos, zCurrent, pnlPct, ageDays);
+
+      if (!pos._optLevels) {
+        pos._optLevels = computeOptimalLevels(pos);
+        db.log('OPT_LEVELS', `${pos.ticker_a}/${pos.ticker_b}: a_d=${pos._optLevels.a_d} exit=${pos._optLevels.exitOffset.toFixed(6)} stop=${pos._optLevels.stopOffset.toFixed(6)}`);
+      }
+      const opt = pos._optLevels;
+
+      // Use rolling spread mean as live theta (adapts to structural shifts)
+      const liveTheta = zMean;
+      const spreadDev = currentSpread - liveTheta;
+      let exitReason = null;
+
+      if (pos.direction === 'LONG_A_SHORT_B') {
+        // Entered below theta. Exit when spread rises past theta + exitOffset.
+        if (spreadDev >= opt.exitOffset) exitReason = 'REVERT';
+        else if (spreadDev <= -opt.stopOffset) exitReason = 'DIVERGE';
+      } else {
+        // Entered above theta. Exit when spread falls past theta - exitOffset.
+        if (spreadDev <= -opt.exitOffset) exitReason = 'REVERT';
+        else if (spreadDev >= opt.stopOffset) exitReason = 'DIVERGE';
+      }
+
+      // Safety net: 3× half-life, capped at 30 days
+      if (!exitReason && ageDays > Math.min(3 * (pos.half_life || 10), 30)) {
+        exitReason = 'OVERTIME';
+      }
 
       if (exitReason) {
         const exitCost = calcTxCost(pos.notional_eur);
