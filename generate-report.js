@@ -262,11 +262,14 @@ async function run() {
         const spreadDev = spreads[t] - liveTheta;
 
         let exitReason = null;
-        if (entryData.direction === 'LONG_A_SHORT_B') {
-          if (spreadDev >= entryData._opt.exitOffset) exitReason = 'REVERT';
+        // Primary: rolling z crossed back through zero
+        if (Math.abs(rz) < 0.5) exitReason = 'REVERT';
+        // Secondary: optimal overshoot capture
+        else if (entryData.direction === 'LONG_A_SHORT_B') {
+          if (spreadDev >= entryData._opt.exitOffset) exitReason = 'REVERT_OPT';
           else if (spreadDev <= -entryData._opt.stopOffset) exitReason = 'DIVERGE';
         } else {
-          if (spreadDev <= -entryData._opt.exitOffset) exitReason = 'REVERT';
+          if (spreadDev <= -entryData._opt.exitOffset) exitReason = 'REVERT_OPT';
           else if (spreadDev >= entryData._opt.stopOffset) exitReason = 'DIVERGE';
         }
         if (!exitReason && age > Math.min(3 * (ou.halfLife || 10), 30)) exitReason = 'OVERTIME';

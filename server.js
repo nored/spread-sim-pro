@@ -832,13 +832,15 @@ async function updatePairPnL() {
       const spreadDev = currentSpread - liveTheta;
       let exitReason = null;
 
-      if (pos.direction === 'LONG_A_SHORT_B') {
-        // Entered below theta. Exit when spread rises past theta + exitOffset.
-        if (spreadDev >= opt.exitOffset) exitReason = 'REVERT';
+      // Primary: basic mean reversion complete (rolling z crossed back through zero)
+      if (Math.abs(zCurrent) < 0.5) exitReason = 'REVERT';
+
+      // Secondary: optimal overshoot capture (Bertram/Zeng-Lee)
+      else if (pos.direction === 'LONG_A_SHORT_B') {
+        if (spreadDev >= opt.exitOffset) exitReason = 'REVERT_OPT';
         else if (spreadDev <= -opt.stopOffset) exitReason = 'DIVERGE';
       } else {
-        // Entered above theta. Exit when spread falls past theta - exitOffset.
-        if (spreadDev <= -opt.exitOffset) exitReason = 'REVERT';
+        if (spreadDev <= -opt.exitOffset) exitReason = 'REVERT_OPT';
         else if (spreadDev >= opt.stopOffset) exitReason = 'DIVERGE';
       }
 
