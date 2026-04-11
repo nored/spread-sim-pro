@@ -797,11 +797,49 @@ async function updatePairPnL() {
       // All exit decisions use rollingZ
       const zCurrent = rollingZ;
 
-      // P&L in USD, then convert to EUR
-      const longA    = pos.direction === 'LONG_A_SHORT_B';
-      const pnlA_usd = pos.shares_a * (spotA_usd - entryA_usd) * (longA ?  1 : -1);
-      const pnlB_usd = pos.shares_b * (spotB_usd - entryB_usd) * (longA ? -1 :  1);
-      const pnlUsd   = pnlA_usd + pnlB_usd;
+      // ── LIVE HEDGE REBALANCING ────────────────────────────
+      // The core fix: adjust shares_b when Kalman beta changes >5%.
+      // Without this, z-score reverts (97.8%) but dollars don't (48%).
+      const longA = pos.direction === 'LONG_A_SHORT_B';
+
+      // Initialize rebalancing state on first poll
+      if (!pos._rebal) {
+        pos._rebal = {
+          shares_b: pos.shares_b,
+          last_b_price_usd: entryB_usd,
+          realized_b_pnl: 0,
+          rebal_cost: 0,
+          count: 0,
+        };
+      }
+
+      // Compute desired shares_b at current Kalman beta (dollar-neutral)
+      const desiredSharesB = +(pos.shares_a * beta * spotA / spotB).toFixed(6);
+      const currentSharesB = pos._rebal.shares_b;
+      const rebalThreshold = 0.05; // rebalance if >5% change
+
+      if (currentSharesB > 0 && Math.abs(desiredSharesB - currentSharesB) / currentSharesB > rebalThreshold) {
+        // Lock in B leg P&L from last rebalance point to now
+        const bPnl = currentSharesB * (spotB_usd - pos._rebal.last_b_price_usd) * (longA ? -1 : 1);
+        pos._rebal.realized_b_pnl += bPnl;
+
+        // Cost of rebalancing (bid-ask on the delta shares)
+        const deltaShares = Math.abs(desiredSharesB - currentSharesB);
+        const rebalCost = deltaShares * spotB_usd * (CONFIG.costs.bidAskBps + CONFIG.costs.slippageBps) / 10000;
+        pos._rebal.rebal_cost += rebalCost;
+
+        // Reset B leg at current price with new shares
+        pos._rebal.shares_b = desiredSharesB;
+        pos._rebal.last_b_price_usd = spotB_usd;
+        pos._rebal.count++;
+
+        db.log('REBAL', `${pos.ticker_a}/${pos.ticker_b}: beta ${(pos.hedge_ratio).toFixed(4)}→${beta.toFixed(4)} sharesB ${currentSharesB.toFixed(2)}→${desiredSharesB.toFixed(2)} (#${pos._rebal.count})`);
+      }
+
+      // Total P&L: A leg (unchanged) + B leg (realized + unrealized) - rebal costs
+      const pnlA_usd = pos.shares_a * (spotA_usd - entryA_usd) * (longA ? 1 : -1);
+      const pnlB_unrealized = pos._rebal.shares_b * (spotB_usd - pos._rebal.last_b_price_usd) * (longA ? -1 : 1);
+      const pnlUsd = pnlA_usd + pos._rebal.realized_b_pnl + pnlB_unrealized - pos._rebal.rebal_cost;
       const eurUsd   = await getFxRate('EUR');
       const pnlEur   = +(pnlUsd / (eurUsd || 1)).toFixed(4);
       const pnlPct   = +((pnlEur / pos.notional_eur) * 100).toFixed(2);

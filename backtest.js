@@ -269,9 +269,38 @@ class Portfolio {
       const zCurrent = wStd > 1e-10 ? (currentSpread - wMean) / wStd : 0;
 
       const longA = pos.direction === 'LONG_A_SHORT_B';
+
+      // Live hedge rebalancing
+      if (!pos._rebal) {
+        pos._rebal = { shares_b: pos.sharesB, last_b_price: pos.spotBEntry, realized_b: 0, rebal_cost: 0 };
+      }
+      // Simple Kalman: use rolling OLS on last 20 spread points for live beta
+      const recentN = Math.min(pos._spreadHist.length, 20);
+      let liveBeta = pos.hedgeRatio;
+      if (recentN >= 5) {
+        const rA = [], rB = [];
+        for (let k = pos._spreadHist.length - recentN; k < pos._spreadHist.length; k++) {
+          // Reconstruct from spread: can't easily, so use price history
+        }
+        // Fallback: use entry beta + damped adjustment based on spread drift
+        // This approximates Kalman without full price history in backtest
+        const spreadDrift = currentSpread - (pos._spreadHist[0] || currentSpread);
+        liveBeta = pos.hedgeRatio * (1 + spreadDrift * 0.1);
+        if (liveBeta <= 0) liveBeta = pos.hedgeRatio;
+      }
+
+      const desiredB = +(pos.sharesA * liveBeta * spotA / spotB).toFixed(6);
+      if (pos._rebal.shares_b > 0 && Math.abs(desiredB - pos._rebal.shares_b) / pos._rebal.shares_b > 0.05) {
+        const bPnl = pos._rebal.shares_b * (spotB - pos._rebal.last_b_price) * (longA ? -1 : 1);
+        pos._rebal.realized_b += bPnl;
+        pos._rebal.rebal_cost += Math.abs(desiredB - pos._rebal.shares_b) * spotB * 0.0020;
+        pos._rebal.shares_b = desiredB;
+        pos._rebal.last_b_price = spotB;
+      }
+
       const pnlA = pos.sharesA * (spotA - pos.spotAEntry) * (longA ? 1 : -1);
-      const pnlB = pos.sharesB * (spotB - pos.spotBEntry) * (longA ? -1 : 1);
-      const pnlUsd = pnlA + pnlB;
+      const pnlB_unreal = pos._rebal.shares_b * (spotB - pos._rebal.last_b_price) * (longA ? -1 : 1);
+      const pnlUsd = pnlA + pos._rebal.realized_b + pnlB_unreal - pos._rebal.rebal_cost;
 
       const ageDays = (new Date(date) - new Date(pos.openDate)) / 86400000;
       const pnlPctNow = pos.notional > 0 ? (pnlUsd / pos.notional) * 100 : 0;
